@@ -1,0 +1,81 @@
+# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native
+ios/
+android/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Metro
+.metro-health-check*
+
+# debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# macOS
+.DS_Store
+*.pem
+
+# local env files
+.env
+.env*.local
+.env.*
+
+# Large config zip backup files
+metro.config.zip
+
+# Keystore/Security keys
+*.jks
+*.p8
+*.p12
+*.key
+*.pem
+*.der
+*.keystore
+*.pkcs12
+
+# Credentials & Service files (Firebase, Google Cloud, etc.)
+google-services.json
+GoogleService-Info.plist
+client_secret*.json
+credentials*.json
+*.p12
+
+# Local SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Build outputs & binaries
+*.apk
+*.aab
+*.aar
+*.jar
+*.bin
+
+# Temporary or system directories
+.replit-artifact/
+.gemini/
+.idea/
+.vscode/
+build/
+bin/
+obj/
+out/
+temp/
+tmp/

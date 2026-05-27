@@ -1,0 +1,491 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Account Verification | Spendly</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg width='180' height='180' viewBox='0 0 180 180' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='180' height='180' rx='36' fill='%232d7a52'/%3E%3C/svg%3E" />
+    
+    <!-- Load Google Font Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin: 0;
+        padding: 24px 16px;
+        background: #f4faf6; /* Spendly background color */
+        color: #0d1a10; /* Spendly foreground text color */
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        line-height: 1.5;
+        transition: background-color 0.3s, color 0.3s;
+      }
+
+      /* Dark mode settings */
+      @media (prefers-color-scheme: dark) {
+        body {
+          background: #0b120e;
+          color: #e6f2eb;
+        }
+        .card {
+          background: #121c17 !important;
+          border-color: #203328 !important;
+          box-shadow: 0 10px 30px rgba(0,0,0,0.2) !important;
+        }
+        .subtitle {
+          color: #8da698 !important;
+        }
+        .btn-primary {
+          background: #388e60 !important;
+          box-shadow: 0 4px 12px rgba(56, 142, 96, 0.3) !important;
+        }
+        .btn-primary:hover {
+          background: #40a26d !important;
+        }
+        .info-box {
+          background: #17241e !important;
+          border-color: #263c31 !important;
+        }
+        .checkmark-circle .background {
+          background: #172b20 !important;
+        }
+        .checkmark-circle .checkmark__circle {
+          stroke: #388e60 !important;
+        }
+        .checkmark-circle .checkmark__check {
+          stroke: #388e60 !important;
+        }
+        .error-circle .background {
+          background: #2a1616 !important;
+        }
+        .error-circle .cross {
+          stroke: #f05252 !important;
+        }
+        .badge-loading {
+          background: rgba(56, 142, 96, 0.15) !important;
+          color: #40a26d !important;
+        }
+      }
+
+      .wrapper {
+        width: 100%;
+        max-width: 440px;
+        margin: 0 auto;
+      }
+
+      .card {
+        background: #ffffff;
+        border: 1px solid #d4e3d9;
+        border-radius: 16px;
+        padding: 40px 24px;
+        text-align: center;
+        box-shadow: 0 10px 25px rgba(13, 26, 16, 0.05);
+        transition: transform 0.3s ease, box-shadow 0.3s ease;
+      }
+
+      h1 {
+        font-size: 24px;
+        font-weight: 700;
+        margin: 0 0 12px;
+        letter-spacing: -0.5px;
+      }
+
+      .subtitle {
+        font-size: 15px;
+        color: #607568;
+        margin-top: 0;
+        margin-bottom: 28px;
+      }
+
+      /* Animated Checkmark CSS */
+      .checkmark-circle {
+        width: 80px;
+        height: 80px;
+        position: relative;
+        display: block;
+        margin: 0 auto 24px;
+      }
+      .checkmark-circle .background {
+        width: 80px;
+        height: 80px;
+        border-radius: 50%;
+        background: #eaf6ee;
+        position: absolute;
+        top: 0;
+        left: 0;
+      }
+      .checkmark-circle svg {
+        width: 80px;
+        height: 80px;
+        position: relative;
+        z-index: 10;
+      }
+      .checkmark__circle {
+        stroke-dasharray: 166;
+        stroke-dashoffset: 166;
+        stroke-width: 4;
+        stroke-miterlimit: 10;
+        stroke: #2d7a52;
+        fill: none;
+        animation: stroke 0.6s cubic-bezier(0.65, 0, 0.45, 1) forwards;
+      }
+      .checkmark__check {
+        transform-origin: 50% 50%;
+        stroke-dasharray: 48;
+        stroke-dashoffset: 48;
+        stroke-width: 5;
+        stroke-linecap: round;
+        stroke: #2d7a52;
+        fill: none;
+        animation: stroke 0.3s cubic-bezier(0.65, 0, 0.45, 1) 0.5s forwards;
+      }
+
+      /* Animated Error Cross CSS */
+      .error-circle {
+        width: 80px;
+        height: 80px;
+        position: relative;
+        display: block;
+        margin: 0 auto 24px;
+      }
+      .error-circle .background {
+        width: 80px;
+        height: 80px;
+        border-radius: 50%;
+        background: #fdf2f2;
+        position: absolute;
+        top: 0;
+        left: 0;
+      }
+      .error-circle svg {
+        width: 80px;
+        height: 80px;
+        position: relative;
+        z-index: 10;
+      }
+      .error__circle {
+        stroke-dasharray: 166;
+        stroke-dashoffset: 166;
+        stroke-width: 4;
+        stroke-miterlimit: 10;
+        stroke: #e02424;
+        fill: none;
+        animation: stroke 0.6s cubic-bezier(0.65, 0, 0.45, 1) forwards;
+      }
+      .error__line1 {
+        stroke-dasharray: 30;
+        stroke-dashoffset: 30;
+        stroke-width: 5;
+        stroke-linecap: round;
+        stroke: #e02424;
+        fill: none;
+        animation: stroke 0.3s cubic-bezier(0.65, 0, 0.45, 1) 0.4s forwards;
+      }
+      .error__line2 {
+        stroke-dasharray: 30;
+        stroke-dashoffset: 30;
+        stroke-width: 5;
+        stroke-linecap: round;
+        stroke: #e02424;
+        fill: none;
+        animation: stroke 0.3s cubic-bezier(0.65, 0, 0.45, 1) 0.6s forwards;
+      }
+
+      @keyframes stroke {
+        100% {
+          stroke-dashoffset: 0;
+        }
+      }
+
+      /* Buttons & Actions */
+      .btn-primary {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        padding: 14px 24px;
+        font-size: 16px;
+        font-weight: 600;
+        color: #ffffff;
+        background: #2d7a52;
+        border: none;
+        border-radius: 12px;
+        text-decoration: none;
+        cursor: pointer;
+        transition: background 0.2s, transform 0.1s;
+        box-shadow: 0 4px 12px rgba(45, 122, 82, 0.2);
+        margin-bottom: 16px;
+      }
+      .btn-primary:hover {
+        background: #246241;
+      }
+      .btn-primary:active {
+        transform: scale(0.98);
+      }
+
+      .btn-primary svg {
+        margin-left: 8px;
+        width: 20px;
+        height: 20px;
+      }
+
+      .badge-loading {
+        display: inline-block;
+        padding: 6px 12px;
+        border-radius: 20px;
+        background: rgba(45, 122, 82, 0.08);
+        color: #2d7a52;
+        font-size: 13px;
+        font-weight: 500;
+        margin-bottom: 20px;
+        animation: pulse 1.5s infinite;
+      }
+      @keyframes pulse {
+        0%, 100% { opacity: 0.7; }
+        50% { opacity: 1; }
+      }
+
+      /* QR Code & Instruction Block */
+      .info-box {
+        background: #fafdfb;
+        border: 1px dashed #c0dccb;
+        border-radius: 12px;
+        padding: 20px;
+        margin-top: 24px;
+        text-align: center;
+      }
+
+      .info-title {
+        font-size: 14px;
+        font-weight: 600;
+        margin: 0 0 6px;
+      }
+
+      .info-text {
+        font-size: 13px;
+        color: #607568;
+        margin: 0 0 16px;
+      }
+
+      .qr-container {
+        width: 140px;
+        height: 140px;
+        margin: 0 auto;
+        background: #ffffff;
+        padding: 8px;
+        border-radius: 8px;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+      }
+
+      /* Views handling */
+      .view-state {
+        display: none;
+      }
+      .view-active {
+        display: block;
+      }
+
+      .spinner {
+        border: 3px solid rgba(45, 122, 82, 0.1);
+        border-top-color: #2d7a52;
+        border-radius: 50%;
+        width: 28px;
+        height: 28px;
+        animation: spin 0.8s linear infinite;
+        margin: 12px auto 0;
+      }
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrapper">
+      <div class="card">
+        
+        <!-- Loading State View -->
+        <div id="view-loading" class="view-state view-active">
+          <div style="padding: 20px 0;">
+            <div class="spinner" style="width: 40px; height: 40px; border-width: 4px; margin-bottom: 20px;"></div>
+            <h1>Verifying Account...</h1>
+            <p class="subtitle" style="margin-bottom: 0;">Please wait while we check your verification link.</p>
+          </div>
+        </div>
+
+        <!-- Success State View -->
+        <div id="view-success" class="view-state">
+          <div class="checkmark-circle">
+            <div class="background"></div>
+            <svg viewBox="0 0 80 80">
+              <path class="checkmark__circle" d="M39.5,75.5 C59.38225,75.5 75.5,59.38225 75.5,39.5 C75.5,19.61775 59.38225,3.5 39.5,3.5 C19.61775,3.5 3.5,19.61775 3.5,39.5 C3.5,59.38225 19.61775,75.5 39.5,75.5 Z" />
+              <path class="checkmark__check" d="M23.5,41.5 L34.5,51.5 L57.5,28.5" />
+            </svg>
+          </div>
+          
+          <div id="auto-redirect-badge" class="badge-loading">
+            Opening Spendly app...
+          </div>
+          
+          <h1>Email Confirmed!</h1>
+          <p class="subtitle">Your email address has been successfully verified. You can now access your account.</p>
+
+          <a href="spendly-mobile://welcome" class="btn-primary">
+            Open Spendly App
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
+            </svg>
+          </a>
+
+          <div class="info-box" id="desktop-instructions">
+            <h3 class="info-title">On your computer?</h3>
+            <p class="info-text">Scan this QR code with your phone's camera to launch Spendly instantly.</p>
+            <div class="qr-container" id="qr-code"></div>
+          </div>
+        </div>
+
+        <!-- Error State View -->
+        <div id="view-error" class="view-state">
+          <div class="error-circle">
+            <div class="background"></div>
+            <svg viewBox="0 0 80 80">
+              <path class="error__circle" d="M39.5,75.5 C59.38225,75.5 75.5,59.38225 75.5,39.5 C75.5,19.61775 59.38225,3.5 39.5,3.5 C19.61775,3.5 3.5,19.61775 3.5,39.5 C3.5,59.38225 19.61775,75.5 39.5,75.5 Z" />
+              <path class="error__line1" d="M28,28 L52,52" />
+              <path class="error__line2" d="M52,28 L28,52" />
+            </svg>
+          </div>
+          
+          <h1 id="error-title">Verification Failed</h1>
+          <p class="subtitle" id="error-message">This verification link is invalid, expired, or has already been used.</p>
+
+          <div class="info-box" style="border-color: #f3c6c6; background: #fffbfb; margin-top: 10px;">
+            <p class="info-text" style="margin-bottom: 0; font-size: 13px; text-align: left;">
+              <strong>What should you do?</strong><br>
+              1. If you're already signed in on the app, you can ignore this.<br>
+              2. Otherwise, open the Spendly app and try signing up again or request a new verification email.
+            </p>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- QR Code styling library -->
+    <script src="https://unpkg.com/qr-code-styling@1.6.0/lib/qr-code-styling.js"></script>
+    <script>
+      (function () {
+        const ua = navigator.userAgent;
+        const isAndroid = /Android/i.test(ua);
+        const isIOS = /iPhone|iPad|iPod/i.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+        const isMobile = isAndroid || isIOS;
+
+        const deepLinkUrl = "spendly-mobile://welcome" + window.location.search + window.location.hash;
+
+        // Parse query params and hash for Supabase redirect payloads
+        const getParams = () => {
+          const params = {};
+          
+          // Parse hash fragment (Supabase uses implicit grant type for web redirects)
+          if (window.location.hash) {
+            const hashParts = window.location.hash.substring(1).split('&');
+            hashParts.forEach(part => {
+              const [key, val] = part.split('=');
+              if (key) params[decodeURIComponent(key)] = decodeURIComponent(val || '');
+            });
+          }
+
+          // Parse query string
+          if (window.location.search) {
+            const queryParts = window.location.search.substring(1).split('&');
+            queryParts.forEach(part => {
+              const [key, val] = part.split('=');
+              if (key) params[decodeURIComponent(key)] = decodeURIComponent(val || '');
+            });
+          }
+
+          return params;
+        };
+
+        const params = getParams();
+        const viewLoading = document.getElementById("view-loading");
+        const viewSuccess = document.getElementById("view-success");
+        const viewError = document.getElementById("view-error");
+        
+        // Hide loading
+        viewLoading.classList.remove("view-active");
+
+        // Check for error parameters returned from Supabase
+        if (params.error || params.error_description) {
+          // Show error state
+          viewError.classList.add("view-active");
+          const errorMsg = params.error_description || "The confirmation link is invalid or expired.";
+          document.getElementById("error-message").innerText = errorMsg.replace(/\+/g, ' ');
+          if (params.error) {
+            document.getElementById("error-title").innerText = `Verification Error: ${params.error.replace(/_/g, ' ')}`;
+          }
+        } else {
+          // Show success state
+          viewSuccess.classList.add("view-active");
+
+          // Update manual button link to include tokens
+          const openAppBtn = document.querySelector(".btn-primary");
+          if (openAppBtn) {
+            openAppBtn.setAttribute("href", deepLinkUrl);
+          }
+
+          // Build dynamic QR Code targeting the deep link
+          const qrCode = new QRCodeStyling({
+            width: 140,
+            height: 140,
+            data: deepLinkUrl,
+            dotsOptions: {
+              color: "#2d7a52", // Spendly primary color
+              type: "rounded"
+            },
+            backgroundOptions: {
+              color: "#ffffff"
+            },
+            cornersSquareOptions: {
+              type: "extra-rounded",
+              color: "#2d7a52"
+            },
+            cornersDotOptions: {
+              type: "dot",
+              color: "#2d7a52"
+            },
+            qrOptions: {
+              errorCorrectionLevel: "H"
+            }
+          });
+          qrCode.append(document.getElementById("qr-code"));
+
+          // Device-specific redirects & display toggles
+          if (isMobile) {
+            // Auto redirect on mobile
+            document.getElementById("auto-redirect-badge").style.display = "inline-block";
+            document.getElementById("desktop-instructions").style.display = "none";
+            
+            // Attempt to launch the app
+            window.location.href = deepLinkUrl;
+            
+            // Optional fallback timeout to change badge status if they don't have the app
+            setTimeout(() => {
+              document.getElementById("auto-redirect-badge").innerText = "Not redirected? Tap button below.";
+            }, 3000);
+          } else {
+            // Desktop user
+            document.getElementById("auto-redirect-badge").style.display = "none";
+            document.getElementById("desktop-instructions").style.display = "block";
+          }
+        }
+      })();
+    </script>
+  </body>
+</html>
