@@ -313,7 +313,7 @@ export default function Onboarding() {
               {/* Quote Card */}
               <View style={s.quoteCard}>
                 <View style={s.quoteIconCircle}>
-                  <Ionicons name="quote" size={10} color="#10b981" />
+                  <Ionicons name={"quote" as any} size={10} color="#10b981" />
                 </View>
                 <Text style={s.quoteCardText}>
                   Small steps today,{"\n"}big freedom tomorrow.
@@ -1005,5 +1005,35 @@ const styles = (topPad: number, bottomPad: number) =>
       fontFamily: "Inter_500Medium",
       color: "#e5e7eb",
       lineHeight: 13,
+    },
+    insightsCategoryList: {
+      gap: 12,
+      marginTop: 8,
+    },
+    insightCategoryItem: {
+      flexDirection: "row",
+      alignItems: "center",
+    },
+    progressTrack: {
+      height: 4,
+      backgroundColor: "rgba(255, 255, 255, 0.08)",
+      borderRadius: 2,
+      marginTop: 6,
+      width: "100%",
+    },
+    progressBar: {
+      height: "100%",
+      borderRadius: 2,
+    },
+    boxHeader: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: 8,
+    },
+    boxAmountSub: {
+      fontSize: 12,
+      fontFamily: "Inter_400Regular",
+      color: "#6b7280",
     },
   });

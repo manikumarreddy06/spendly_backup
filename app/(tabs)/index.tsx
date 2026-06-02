@@ -1,19 +1,30 @@
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import DateTimePicker, { DateTimePickerAndroid } from "@react-native-community/datetimepicker";
+import * as Haptics from "expo-haptics";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import React, { useMemo, useRef, useState, useCallback, useEffect } from "react";
 import {
+  Alert,
   Animated,
   Dimensions,
+  KeyboardAvoidingView,
+  Modal,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Circle } from "react-native-svg";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { AppTourOverlay } from "@/components/AppTourOverlay";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import {
   useApp,
   ExpenseCategory,
@@ -25,39 +36,22 @@ import {
 import { isSameMember, getExpenseMemberConsumptionShare } from "@/lib/split";
 import { useColors } from "@/hooks/useColors";
 import { useThemePreference } from "@/hooks/useThemePreference";
+import { NativeAdCard } from "@/components/NativeAdCard";
+import { BalanceCard } from "@/components/BalanceCard";
+import { ReminderModal } from "@/components/ReminderModal";
+import { getDashboardInsights } from "@/lib/insights";
 
-const GREEN = "#18633f";
-const GREEN_DARK = "#134830";
+import { BUILTIN_CATEGORIES, resolveExpenseMeta } from "@/constants/categories";
 
 type CategoryTile = {
   key: string;
   label: string;
   icon: string;
-  iconSet?: "ion" | "mci";
   color: string;
   bg: string;
 };
 
-const BUILTIN_CATEGORIES: CategoryTile[] = [
-  { key: "travel", label: "Travel", icon: "airplane", iconSet: "ion", color: "#10b981", bg: "#e6f7f0" },
-  { key: "food", label: "Food", icon: "silverware-fork-knife", iconSet: "mci", color: "#f97316", bg: "#fff5e6" },
-  { key: "shopping", label: "Shopping", icon: "bag-handle", iconSet: "ion", color: "#a855f7", bg: "#f5ebff" },
-  { key: "entertainment", label: "Fun", icon: "game-controller", iconSet: "ion", color: "#ec4899", bg: "#fdf0f5" },
-  { key: "healthcare", label: "Health", icon: "heart", iconSet: "ion", color: "#ef4444", bg: "#fdebeb" },
-  { key: "others", label: "Others", icon: "ellipsis-horizontal", iconSet: "ion", color: "#6b7280", bg: "#f0f2f5" },
-];
 
-const BUILTIN_META: Record<
-  ExpenseCategory,
-  { icon: string; color: string; bg: string; label: string }
-> = {
-  travel: { icon: "airplane", color: "#10b981", bg: "#e6f7f0", label: "Travel" },
-  food: { icon: "restaurant", color: "#f97316", bg: "#fff5e6", label: "Food" },
-  shopping: { icon: "bag-handle", color: "#a855f7", bg: "#f5ebff", label: "Shopping" },
-  entertainment: { icon: "game-controller", color: "#ec4899", bg: "#fdf0f5", label: "Fun" },
-  healthcare: { icon: "heart", color: "#ef4444", bg: "#fdebeb", label: "Health" },
-  others: { icon: "ellipsis-horizontal", color: "#6b7280", bg: "#f0f2f5", label: "Others" },
-};
 
 type ActivityItem = {
   id: string;
@@ -71,6 +65,8 @@ type ActivityItem = {
   route: string;
   sortDate: string;
 };
+
+const GREEN = "#18633f";
 
 function fmt(n: number): string {
   return Math.round(n).toLocaleString("en-IN");
@@ -98,43 +94,12 @@ function customToTile(cat: CustomCategory): CategoryTile {
     key: cat.id,
     label: cat.name,
     icon: cat.icon,
-    iconSet: "ion",
     color: cat.color,
     bg: cat.color + "18",
   };
 }
 
-function resolveExpenseMeta(
-  category: string | null | undefined,
-  customCategories: CustomCategory[],
-  colors: ReturnType<typeof useColors>
-): { icon: string; color: string; bg: string; label: string } {
-  if (category && category in BUILTIN_META) {
-    const builtin = BUILTIN_META[category as ExpenseCategory];
-    const color = (colors as any)[category] || colors.primary;
-    return {
-      ...builtin,
-      color,
-      bg: color + "18",
-    };
-  }
-  const custom = category ? customCategories.find((c) => c.id === category) : undefined;
-  if (custom) {
-    return {
-      icon: custom.icon,
-      color: custom.color,
-      bg: custom.color + "18",
-      label: custom.name,
-    };
-  }
-  const defaultColor = colors.mutedForeground;
-  return {
-    icon: "ellipsis-horizontal",
-    color: defaultColor,
-    bg: defaultColor + "18",
-    label: "Others",
-  };
-}
+
 
 function buildRecentActivities(
   expenses: Expense[],
@@ -221,57 +186,21 @@ function buildRecentActivities(
     .slice(0, 8);
 }
 
-function CircularProgress({ pct, size = 88 }: { pct: number; size?: number }) {
-  const r = (size - 12) / 2;
-  const circ = 2 * Math.PI * r;
-  const clamped = Math.min(Math.max(pct, 0), 100);
-  const offset = circ * (1 - clamped / 100);
 
-  return (
-    <Svg width={size} height={size}>
-      <Circle
-        cx={size / 2}
-        cy={size / 2}
-        r={r}
-        stroke="rgba(255,255,255,0.2)"
-        strokeWidth={5}
-        fill="none"
-      />
-      <Circle
-        cx={size / 2}
-        cy={size / 2}
-        r={r}
-        stroke="#fff"
-        strokeWidth={5}
-        fill="none"
-        strokeLinecap="round"
-        strokeDasharray={`${circ}`}
-        strokeDashoffset={offset}
-        rotation={-90}
-        origin={`${size / 2}, ${size / 2}`}
-      />
-    </Svg>
-  );
-}
 
 function CategoryIcon({
   name,
-  iconSet,
   color,
   size = 22,
 }: {
   name: string;
-  iconSet?: "ion" | "mci";
   color: string;
   size?: number;
 }) {
-  if (iconSet === "mci") {
-    return <MaterialCommunityIcons name={name as any} size={size} color={color} />;
-  }
   return <Ionicons name={name as any} size={size} color={color} />;
 }
 
-export default function HomeScreen() {
+function HomeScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -294,6 +223,14 @@ export default function HomeScreen() {
   const spentPct = Math.min(100, spentPctRaw);
   const remainingPct =
     budgetLimit > 0 ? Math.min(100, Math.round((remaining / budgetLimit) * 100)) : 0;
+
+  const greeting = useMemo(() => {
+    const hr = new Date().getHours();
+    if (hr >= 5 && hr < 12) return "Good morning";
+    if (hr >= 12 && hr < 17) return "Good afternoon";
+    if (hr >= 17 && hr < 22) return "Good evening";
+    return "Good night";
+  }, []);
 
   const quickActionCategories = useMemo(() => {
     const builtin: CategoryTile[] = BUILTIN_CATEGORIES.map((cat) => {
@@ -321,112 +258,7 @@ export default function HomeScreen() {
   );
 
   const insights = useMemo(() => {
-    type Insight = { text: string; icon: string; iconBg: string };
-    const results: Insight[] = [];
-
-    const now = new Date();
-    const msInDay = 86400000;
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-    const startOfWeek1 = startOfToday - 6 * msInDay;
-    const startOfWeek2 = startOfToday - 13 * msInDay;
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
-
-    if (allExpenses.length === 0) {
-      return [
-        { text: "Add your first expense to see spending insights! 📊", icon: "bulb-outline", iconBg: "#6366f1" },
-        { text: "Track your expenses daily to build better financial habits 💪", icon: "calendar-outline", iconBg: "#8b5cf6" },
-        { text: "Set a monthly budget in Settings to stay on track 🎯", icon: "flag-outline", iconBg: GREEN },
-      ];
-    }
-
-    let w1Total = 0;
-    let w2Total = 0;
-    const w1CategoryTotals: Record<string, number> = {};
-    const w2CategoryTotals: Record<string, number> = {};
-    let monthTotal = 0;
-    const allCatTotals: Record<string, number> = {};
-
-    allExpenses.forEach((e) => {
-      const t = new Date(e.date).getTime();
-      allCatTotals[e.category] = (allCatTotals[e.category] || 0) + e.amount;
-      if (t >= startOfMonth) monthTotal += e.amount;
-      if (t >= startOfWeek1) {
-        w1Total += e.amount;
-        w1CategoryTotals[e.category] = (w1CategoryTotals[e.category] || 0) + e.amount;
-      } else if (t >= startOfWeek2 && t < startOfWeek1) {
-        w2Total += e.amount;
-        w2CategoryTotals[e.category] = (w2CategoryTotals[e.category] || 0) + e.amount;
-      }
-    });
-
-    // Insight 1: week-over-week overall trend
-    if (w1Total > 0 && w2Total > 0) {
-      const diff = w2Total - w1Total;
-      const pct = Math.round((Math.abs(diff) / w2Total) * 100);
-      if (pct >= 5) {
-        if (diff > 0) {
-          results.push({ text: `You spent ${pct}% less this week vs last week 🎉`, icon: "trending-down", iconBg: "#10b981" });
-        } else {
-          results.push({ text: `Heads up! Spending is up ${pct}% vs last week 📉`, icon: "trending-up", iconBg: "#ef4444" });
-        }
-      } else {
-        results.push({ text: `Steady spender! This week (₹${fmt(w1Total)}) ≈ last week (₹${fmt(w2Total)}) ⚖️`, icon: "scale-outline", iconBg: GREEN });
-      }
-    } else if (w1Total > 0) {
-      results.push({ text: `You spent ₹${fmt(w1Total)} this week across ${Object.keys(w1CategoryTotals).length} categories 💰`, icon: "wallet-outline", iconBg: GREEN });
-    } else if (w2Total > 0) {
-      results.push({ text: `Zero spending this week vs ₹${fmt(w2Total)} last week 🥳`, icon: "trending-down", iconBg: "#10b981" });
-    }
-
-    // Insight 2: top category change week-over-week
-    let insightCategory = "";
-    let maxChangePct = 0;
-    let isLess = false;
-    const allCategories = new Set([...Object.keys(w1CategoryTotals), ...Object.keys(w2CategoryTotals)]);
-    for (const cat of allCategories) {
-      const amt1 = w1CategoryTotals[cat] || 0;
-      const amt2 = w2CategoryTotals[cat] || 0;
-      if (amt1 > 0 && amt2 > 0) {
-        const diff = amt2 - amt1;
-        const pct = Math.round((Math.abs(diff) / amt2) * 100);
-        if (pct >= 5 && pct > maxChangePct) {
-          maxChangePct = pct;
-          isLess = diff > 0;
-          insightCategory = cat;
-        }
-      }
-    }
-    if (insightCategory && maxChangePct > 0) {
-      const catLabel = resolveExpenseMeta(insightCategory, customCategories, colors).label;
-      if (isLess) {
-        results.push({ text: `${maxChangePct}% less on ${catLabel} this week — great control! 🥳`, icon: "trending-down", iconBg: "#10b981" });
-      } else {
-        results.push({ text: `${catLabel} spending is up ${maxChangePct}% this week 📈`, icon: "trending-up", iconBg: "#ef4444" });
-      }
-    }
-
-    // Insight 3: top category overall + month total
-    let topCat = "others";
-    let maxVal = 0;
-    Object.entries(allCatTotals).forEach(([cat, val]) => {
-      if (val > maxVal) { maxVal = val; topCat = cat; }
-    });
-    const catMeta = resolveExpenseMeta(topCat, customCategories, colors);
-    const totalSpentAll = allExpenses.reduce((sum, e) => sum + e.amount, 0);
-    const topPct = totalSpentAll > 0 ? Math.round((maxVal / totalSpentAll) * 100) : 0;
-    results.push({ text: `${catMeta.label} is your top spend (${topPct}% of ₹${fmt(totalSpentAll)} total) 💡`, icon: "pie-chart-outline", iconBg: "#6366f1" });
-
-    // Insight 4: this month summary
-    if (monthTotal > 0) {
-      const budgetUsed = budgetLimit > 0 ? Math.round((monthTotal / budgetLimit) * 100) : 0;
-      if (budgetLimit > 0) {
-        results.push({ text: `This month: ₹${fmt(monthTotal)} spent (${budgetUsed}% of your ₹${fmt(budgetLimit)} budget) 📅`, icon: "calendar-outline", iconBg: budgetUsed > 80 ? "#ef4444" : GREEN });
-      } else {
-        results.push({ text: `You've spent ₹${fmt(monthTotal)} so far this month 📅`, icon: "calendar-outline", iconBg: GREEN });
-      }
-    }
-
-    return results.slice(0, 4);
+    return getDashboardInsights(allExpenses, customCategories, budgetLimit, colors);
   }, [allExpenses, customCategories, budgetLimit, colors]);
 
   const screenWidth = Dimensions.get("window").width;
@@ -435,6 +267,62 @@ export default function HomeScreen() {
   const tileWidth = (screenWidth - horizontalPad * 2 - gridGap * 3) / 4;
   const topPad = Platform.OS === "web" ? 67 : insets.top;
   const tabBarClearance = 72 + (Platform.OS === "ios" ? insets.bottom : 12);
+
+  // ── Reminder Modal State (must be before derived values) ──
+  const [reminderModalVisible, setReminderModalVisible] = useState(false);
+
+  const [tourVisible, setTourVisible] = useState(false);
+  const notifRef = useRef<any>(null);
+  const budgetRef = useRef<any>(null);
+
+  const [notifLayout, setNotifLayout] = useState<{ x: number, y: number, w: number, h: number } | null>(null);
+  const [budgetLayout, setBudgetLayout] = useState<{ x: number, y: number, w: number, h: number } | null>(null);
+
+  useEffect(() => {
+    if (tourVisible) {
+      // Give a tiny timeout for elements to fully render and calculate layouts
+      const timer = setTimeout(() => {
+        if (notifRef.current && typeof notifRef.current.measure === 'function') {
+          notifRef.current.measure((x: any, y: any, w: any, h: any, pageX: any, pageY: any) => {
+            if (w > 0 && h > 0) {
+              setNotifLayout({ x: pageX, y: pageY, w, h });
+            }
+          });
+        }
+        if (budgetRef.current && typeof budgetRef.current.measure === 'function') {
+          budgetRef.current.measure((x: any, y: any, w: any, h: any, pageX: any, pageY: any) => {
+            if (w > 0 && h > 0) {
+              setBudgetLayout({ x: pageX, y: pageY, w, h });
+            }
+          });
+        }
+      }, 350);
+      return () => clearTimeout(timer);
+    }
+  }, [tourVisible]);
+
+  useEffect(() => {
+    const checkTour = async () => {
+      try {
+        const seen = await AsyncStorage.getItem("@spendly_tour_seen");
+        if (seen !== "true") {
+          setTourVisible(true);
+        }
+      } catch (err) {
+        console.warn("Error reading tour seen status:", err);
+      }
+    };
+    checkTour();
+  }, []);
+
+  const handleCloseTour = async () => {
+    setTourVisible(false);
+    try {
+      await AsyncStorage.setItem("@spendly_tour_seen", "true");
+    } catch (err) {
+      console.warn("Error writing tour seen status:", err);
+    }
+  };
 
   // ── All hooks must be before any conditional logic ──
 
@@ -485,6 +373,7 @@ export default function HomeScreen() {
   }, [isDark]);
 
   const toggleTheme = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     setThemeMode(isDark ? 'light' : 'dark');
   }, [isDark, setThemeMode]);
 
@@ -496,6 +385,9 @@ export default function HomeScreen() {
   const s = createStyles(colors, topPad, tabBarClearance, tileWidth, screenWidth);
   const totalBalance = remaining;
   const displayName = profile?.name || "User";
+
+
+
   const gradientColors = isDark
     ? ["#0b1610", "#080c09", "#080c09"]
     : ["#dff5e8", "#ecf7f0", "#f4faf6"];
@@ -503,7 +395,7 @@ export default function HomeScreen() {
   return (
     <View style={s.root}>
       <LinearGradient
-        colors={gradientColors}
+        colors={gradientColors as any}
         locations={[0, 0.35, 1]}
         style={s.headerBg}
       />
@@ -521,7 +413,7 @@ export default function HomeScreen() {
       >
         {/* Header */}
         <View style={s.header}>
-          <Text style={s.greetSub}>Good morning,</Text>
+          <Text style={s.greetSub}>{greeting},</Text>
           <View style={s.nameRow}>
             <Text style={s.greetName} testID="text-greeting" numberOfLines={1}>
               {displayName} 👋
@@ -541,77 +433,55 @@ export default function HomeScreen() {
                   <Ionicons name="moon" size={18} color="#818cf8" />
                 </Animated.View>
               </TouchableOpacity>
-              <TouchableOpacity
-                testID="button-settings"
-                style={s.settingsBtn}
-                onPress={() => router.push("/profile")}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="settings-outline" size={20} color={colors.mutedForeground} />
-              </TouchableOpacity>
+              <View ref={notifRef} collapsable={false}>
+                <TouchableOpacity
+                  testID="button-reminders"
+                  style={s.settingsBtn}
+                  onPress={() => setReminderModalVisible(true)}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="notifications-outline" size={20} color={colors.mutedForeground} />
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
           <Text style={s.greetTagline}>Let's make today financially great.</Text>
         </View>
 
         {/* Balance card */}
-        <LinearGradient
-          colors={[GREEN, GREEN_DARK]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={s.balanceCard}
-        >
-          <View style={s.cardWave1} />
-          <View style={s.cardWave2} />
-          <View style={s.balanceRow}>
-            <View style={s.balanceLeft}>
-              <Text style={s.balLabel}>Total Balance</Text>
-              <Text style={s.balAmount}>₹{fmt(totalBalance)}</Text>
-              {budgetLimit > 0 && (
-                <View style={s.vsBadge}>
-                  <Text style={s.vsText}>
-                    ₹{fmt(spent)} spent · {spentPct}% of limit used
-                  </Text>
-                </View>
-              )}
-            </View>
-            <View style={s.ringBox}>
-              <CircularProgress pct={spentPct} size={88} />
-              <View style={s.ringCenter}>
-                <Text style={s.ringPct}>{spentPctRaw}%</Text>
-                <Text
-                  style={s.ringLimit}
-                  numberOfLines={2}
-                  adjustsFontSizeToFit
-                  minimumFontScale={0.75}
-                >
-                  {budgetLimit > 0 ? `of ₹${fmt(budgetLimit)} limit` : "set salary in settings"}
-                </Text>
-              </View>
-            </View>
-          </View>
-        </LinearGradient>
+        <BalanceCard
+          ref={budgetRef}
+          totalBalance={totalBalance}
+          budgetLimit={budgetLimit}
+          spent={spent}
+          spentPct={spentPct}
+          spentPctRaw={spentPctRaw}
+          isDark={isDark}
+          primaryColor={colors.primary}
+          primaryDarkColor={isDark ? "#065f46" : "#134830"}
+        />
 
-        {/* Quick Log Compact Action Row */}
-        <TouchableOpacity
-          testID="button-quick-log-main"
-          onPress={() => router.push("/quick-log")}
-          style={s.quickLogCompactBtn}
-          activeOpacity={0.8}
-        >
-          <View style={s.quickLogCompactContent}>
-            <View style={[s.quickLogCompactIconBg, { backgroundColor: colors.primary + "18" }]}>
-              <Ionicons name="flash" size={16} color={colors.primary} />
-            </View>
-            <Text style={[s.quickLogCompactText, { color: colors.foreground }]}>
-              Quick Log Expense
-            </Text>
-            <Text style={[s.quickLogCompactSub, { color: colors.mutedForeground }]}>
-              in 3 seconds
-            </Text>
-            <Ionicons name="chevron-forward" size={16} color={colors.primary} style={{ marginLeft: "auto" }} />
+        {/* Monthly Insight Hero Section */}
+        <View style={s.insightHeroCard}>
+          <View style={s.insightHeroHeader}>
+            <Ionicons name="sparkles" size={14} color={colors.primary} />
+            <Text style={[s.insightHeroTitle, { color: colors.primary }]}>MONTHLY INSIGHT</Text>
           </View>
-        </TouchableOpacity>
+          <Text style={s.insightHeroText}>
+            {spent === 0
+              ? "Your budget for this month is fresh and ready. Let's make it financially great! ✨"
+              : budgetLimit === 0
+              ? `You have spent ₹${fmt(spent)} this month. Consider setting a monthly budget limit in your profile to track against.`
+              : spentPct < 50
+              ? `Looking great! You've used only ${spentPct}% of your monthly budget. Calm, steady, and on track.`
+              : spentPct <= 80
+              ? `Pacing fine. You've spent ₹${fmt(spent)} so far. Your average daily spend is ₹${fmt(Math.max(1, spent / new Date().getDate()))}. Keep up the steady spending.`
+              : spentPct < 100
+              ? `Note: You've used ${spentPct}% of your budget. With ${Math.max(1, 30 - new Date().getDate())} days remaining, consider slowing down your non-essential spending.`
+              : `Budget cap reached. You have exceeded your limit by ₹${fmt(spent - budgetLimit)}. Let's pause and keep transactions essential.`}
+          </Text>
+        </View>
+
 
         {/* Quick Actions */}
         <View style={s.section}>
@@ -628,12 +498,14 @@ export default function HomeScreen() {
                 <TouchableOpacity
                   key={cat.key}
                   testID={`button-category-${cat.key}`}
+                  accessibilityLabel={`${cat.label} category, total spent ₹${fmt(catSpent)}`}
+                  accessibilityRole="button"
                   style={s.catTile}
                   activeOpacity={0.75}
                   onPress={() => router.push(`/add/${cat.key}` as any)}
                 >
                   <View style={[s.catIconBox, { backgroundColor: cat.bg }]}>
-                    <CategoryIcon name={cat.icon} iconSet={cat.iconSet} color={cat.color} size={22} />
+                    <CategoryIcon name={cat.icon} color={cat.color} size={22} />
                   </View>
                   <Text style={s.catLabel}>{cat.label}</Text>
                   <Text style={[s.catAmount, { color: cat.color }]}>₹{fmt(catSpent)}</Text>
@@ -642,6 +514,8 @@ export default function HomeScreen() {
             })}
             <TouchableOpacity
               testID="button-add-category"
+              accessibilityLabel="Add custom category"
+              accessibilityRole="button"
               style={s.addCatTile}
               activeOpacity={0.75}
               onPress={() => router.push("/add-category")}
@@ -716,8 +590,13 @@ export default function HomeScreen() {
                 activeOpacity={0.75}
                 onPress={() => router.push("/quick-log")}
               >
-                <Text style={s.emptyActivityText}>No activity yet this month</Text>
-                <Text style={s.emptyActivitySub}>Tap a category above to add an expense</Text>
+                <View style={[s.emptyIconCircle, { backgroundColor: colors.primary + "12" }]}>
+                  <Ionicons name="receipt-outline" size={24} color={colors.primary} />
+                </View>
+                <Text style={s.emptyActivityText}>Your ledger is empty this month</Text>
+                <Text style={s.emptyActivitySub}>
+                  Tap any category above or the flash button below to log your first transaction.
+                </Text>
               </TouchableOpacity>
             ) : (
               recentActivities.map((act, idx) => (
@@ -752,7 +631,21 @@ export default function HomeScreen() {
             )}
           </View>
         </View>
+        <NativeAdCard />
       </ScrollView>
+
+      {/* Reminders Modal */}
+      <ReminderModal
+        visible={reminderModalVisible}
+        onClose={() => setReminderModalVisible(false)}
+      />
+      <AppTourOverlay
+        isVisible={tourVisible}
+        onClose={handleCloseTour}
+        colors={colors}
+        notifLayout={notifLayout}
+        budgetLayout={budgetLayout}
+      />
     </View>
   );
 }
@@ -1166,20 +1059,68 @@ function createStyles(colors: ReturnType<typeof useColors>, topPad: number, tabB
       color: colors.foreground,
     },
     emptyActivity: {
-      paddingVertical: 28,
+      paddingVertical: 32,
+      paddingHorizontal: 20,
       alignItems: "center",
+      justifyContent: "center",
+    },
+    emptyIconCircle: {
+      width: 52,
+      height: 52,
+      borderRadius: 26,
+      alignItems: "center",
+      justifyContent: "center",
+      marginBottom: 10,
+    },
+    insightHeroCard: {
+      backgroundColor: isDark ? "rgba(24, 99, 63, 0.12)" : "rgba(24, 99, 63, 0.05)",
+      borderColor: isDark ? "rgba(24, 99, 63, 0.22)" : "rgba(24, 99, 63, 0.12)",
+      borderWidth: 1,
+      borderRadius: 16,
+      padding: 16,
+      marginTop: 0,
+      marginBottom: 22,
+    },
+    insightHeroHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      marginBottom: 6,
+    },
+    insightHeroTitle: {
+      fontSize: 10,
+      fontFamily: "Inter_700Bold",
+      letterSpacing: 1,
+    },
+    insightHeroText: {
+      fontSize: 13,
+      fontFamily: "Inter_400Regular",
+      color: colors.foreground,
+      lineHeight: 18,
     },
     emptyActivityText: {
       fontSize: 14,
       fontFamily: "Inter_600SemiBold",
       color: colors.foreground,
+      textAlign: "center",
     },
     emptyActivitySub: {
       fontSize: 12,
       fontFamily: "Inter_400Regular",
       color: colors.mutedForeground,
-      marginTop: 4,
+      marginTop: 6,
       textAlign: "center",
+      lineHeight: 18,
     },
+
+
   });
+}
+
+export default function HomeScreenWithErrorBoundary() {
+  return (
+    <ErrorBoundary>
+      <HomeScreen />
+    </ErrorBoundary>
+  );
 }

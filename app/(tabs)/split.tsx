@@ -21,10 +21,13 @@ import {
   View,
   KeyboardAvoidingView,
   useColorScheme,
+  RefreshControl,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useApp, SplitGroup, parseGroupName, formatGroupName } from "@/context/AppContext";
 import { useColors } from "@/hooks/useColors";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { SUPABASE_ENABLED } from "@/lib/config";
 import { useThemePreference } from "@/hooks/useThemePreference";
 import {
   getExpenseMemberShare,
@@ -37,11 +40,11 @@ const GREEN = "#18633f";
 const PRESET_EMOJIS = ["🏖", "🏠", "🍻", "🚗", "🍕", "🎒", "💸", "🎮", "🍿", "🍽", "✈", "🎸"];
 const PRESET_COLORS = ["#2d7a52", "#3b82f6", "#f97316", "#a855f7", "#ec4899", "#14b8a6", "#eab308", "#ef4444"];
 
-export default function SplitScreen() {
+function SplitScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { splitGroups, createSplitGroup, deleteSplitGroup, getOweSummary, joinGroupFromInvite, profile, getBalances } = useApp();
+  const { splitGroups, createSplitGroup, deleteSplitGroup, getOweSummary, joinGroupFromInvite, profile, getBalances, refreshGroup } = useApp();
 
   const [modalVisible, setModalVisible] = useState(false);
   const [createStep, setCreateStep] = useState(1); // 1: Info, 2: Members
@@ -63,6 +66,19 @@ export default function SplitScreen() {
   const [inviteCodeFocus, setInviteCodeFocus] = useState(false);
   const [joiningGroup, setJoiningGroup] = useState(false);
   const [clipboardCode, setClipboardCode] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const onRefresh = async () => {
+    if (!SUPABASE_ENABLED) return;
+    setRefreshing(true);
+    try {
+      await Promise.all(splitGroups.map((g) => refreshGroup(g.id)));
+    } catch (err) {
+      console.warn("[refresh] Dashboard pull-to-refresh failed:", err);
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   useEffect(() => {
     if (joinModalVisible) {
@@ -406,7 +422,7 @@ export default function SplitScreen() {
   return (
     <View style={s.root}>
       <LinearGradient
-        colors={gradientColors}
+        colors={gradientColors as any}
         locations={[0, 0.35, 1]}
         style={s.headerBg}
       />
@@ -498,6 +514,14 @@ export default function SplitScreen() {
           keyExtractor={(g) => g.id}
           contentContainerStyle={{ padding: 16, paddingBottom: tabClearance + 16 }}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              colors={[colors.primary]}
+              tintColor={colors.primary}
+            />
+          }
           ListHeaderComponent={
             <>
               {/* Redesigned Premium Summary Card */}
@@ -1156,6 +1180,12 @@ const splitStyles = (
       color: colors.mutedForeground,
       marginTop: 2,
     },
+    groupUpdated: {
+      fontSize: 12,
+      fontFamily: "Inter_400Regular",
+      color: colors.mutedForeground,
+      marginTop: 4,
+    },
     membersRow: {
       flexDirection: "row",
       alignItems: "center",
@@ -1603,3 +1633,11 @@ const splitStyles = (
       color: colors.primary,
     },
   });
+
+export default function SplitScreenWithErrorBoundary() {
+  return (
+    <ErrorBoundary>
+      <SplitScreen />
+    </ErrorBoundary>
+  );
+}

@@ -17,7 +17,6 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useApp, parseGroupName } from "@/context/AppContext";
 import { useColors } from "@/hooks/useColors";
-import { supabase } from "@/lib/supabase";
 
 export default function JoinGroupScreen() {
   const colors = useColors();
@@ -35,38 +34,29 @@ export default function JoinGroupScreen() {
   const alreadyMember = id ? splitGroups.some((g) => g.id === id) : false;
 
   useEffect(() => {
-    async function fetchGroup() {
-      if (!id) {
-        setErrorMsg("Invalid or missing group invitation link.");
-        setLoading(false);
-        return;
-      }
-
-      try {
-        const { data, error } = await supabase
-          .from("groups")
-          .select("id, name, members")
-          .eq("id", id)
-          .single();
-
-        if (error || !data) {
-          setErrorMsg("This split group could not be found. It may have been deleted.");
-        } else {
-          setGroupData({
-            id: data.id,
-            name: data.name || "Untitled Group",
-            members: Array.isArray(data.members) ? data.members : [],
-          });
-        }
-      } catch (err) {
-        setErrorMsg("Failed to retrieve group invitation details.");
-      } finally {
-        setLoading(false);
-      }
+    if (!id) {
+      setErrorMsg("Invalid or missing group invitation link.");
+      setLoading(false);
+      return;
     }
 
-    fetchGroup();
-  }, [id]);
+    // Attempt to find the group (local first, then Supabase remote)
+    joinGroupFromInvite(id).then((group) => {
+      if (group) {
+        setGroupData({
+          id: group.id,
+          name: group.name || "Untitled Group",
+          members: group.members || [],
+        });
+      } else {
+        setErrorMsg("This group wasn't found. Make sure you've entered the correct invite code and try again.");
+      }
+      setLoading(false);
+    }).catch(() => {
+      setErrorMsg("Could not retrieve the group. Please check your connection and try again.");
+      setLoading(false);
+    });
+  }, [id, joinGroupFromInvite]);
 
   const handleJoin = async () => {
     if (!id) return;
@@ -160,7 +150,7 @@ export default function JoinGroupScreen() {
               <Text style={[s.promptText, { color: colors.mutedForeground }]}>
                 {alreadyMember
                   ? "You are already a member of this split group. You can access it on your device now."
-                  : "Accepting this invitation will add the split group to your dashboard and sync all transactions."}
+                  : "Accepting this invitation will add the split group to your dashboard. You'll be able to track and settle shared expenses with the group members."}
               </Text>
 
               <TouchableOpacity

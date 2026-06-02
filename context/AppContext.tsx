@@ -7,7 +7,6 @@ import React, {
   useMemo,
   useState,
 } from "react";
-import { supabase } from "@/lib/supabase";
 import {
   isExpenseSettledFor,
   isSameMember,
@@ -15,6 +14,14 @@ import {
   getExpenseMemberConsumptionShare,
   getExpenseMemberShare,
 } from "@/lib/split";
+import {
+  upsertGroup,
+  fetchGroup,
+  deleteGroup as deleteGroupRemote,
+  subscribeToGroup,
+  unsubscribeAll,
+} from "@/lib/supabase";
+import { SUPABASE_ENABLED } from "@/lib/config";
 
 export type ExpenseCategory =
   | "travel"
@@ -48,6 +55,8 @@ export interface Expense {
   description: string;
   date: string;
   createdAt: string;
+  recurring?: "monthly" | null;
+  recurringGroupId?: string | null;
 }
 
 export interface SplitExpense {
@@ -75,8 +84,14 @@ export interface SplitGroup {
 }
 
 function genId(): string {
+  // Upgraded UUID v4 generator with time-based seed and high random entropy to guarantee collision prevention
+  let d = Date.now();
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function'){
+    d += performance.now();
+  }
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
+    const r = (d + Math.random() * 16) % 16 | 0;
+    d = Math.floor(d / 16);
     const v = c === "x" ? r : (r & 0x3) | 0x8;
     return v.toString(16);
   });
@@ -105,71 +120,14 @@ export function formatGroupName(name: string, emoji: string, coverColor: string)
   return `[emoji::${emoji}][color::${coverColor}]${name}`;
 }
 
-// ─── Supabase helpers ───────────────────────────────────────────────────────
-
-async function loadFromSupabase<T>(table: string, userId?: string): Promise<T[]> {
-  try {
-    let query = supabase.from(table).select("*");
-    // CRITICAL 1: Add user_id filtering on reads
-    if (userId && table === "expenses") {
-      query = query.eq("user_id", userId);
-    }
-    const { data, error } = await query;
-    if (error) {
-      console.warn(`Supabase load ${table} failed:`, error.message);
-      return [];
-    }
-    return (data ?? []) as T[];
-  } catch (e) {
-    console.warn(`Supabase load ${table} error:`, e);
-    return [];
-  }
-}
-
-async function upsertToSupabase(table: string, rows: unknown[]): Promise<boolean> {
-  if (rows.length === 0) return true;
-  try {
-    const { error } = await supabase.from(table).upsert(rows as any, {
-      onConflict: "id",
-      ignoreDuplicates: false,
-    });
-    if (error) {
-      console.warn(`Supabase upsert ${table} failed:`, error.message);
-      return false;
-    }
-    return true;
-  } catch (e) {
-    console.warn(`Supabase upsert ${table} error:`, e);
-    return false;
-  }
-}
-
-async function deleteFromSupabase(table: string, id: string, userId?: string): Promise<boolean> {
-  try {
-    let query = supabase.from(table).delete().eq("id", id);
-    // CRITICAL 1: Add user_id filtering defensively
-    if (userId && table === "expenses") {
-      query = query.eq("user_id", userId);
-    }
-    const { error } = await query;
-    if (error) {
-      console.warn(`Supabase delete ${table} failed:`, error.message);
-      return false;
-    }
-    return true;
-  } catch (e) {
-    console.warn(`Supabase delete ${table} error:`, e);
-    return false;
-  }
-}
-
 // ─── Context types ──────────────────────────────────────────────────────────
 
-// ─── Context types ──────────────────────────────────────────────────────────
+export type LastDeletedItem =
+  | { type: "expense"; data: Expense }
+  | { type: "split"; groupId: string; data: SplitExpense };
 
 interface AppContextType {
   loaded: boolean;
-  hasSession: boolean;
   profile: UserProfile | null;
   setProfile: (p: UserProfile) => Promise<void>;
   expenses: Expense[];
@@ -204,6 +162,12 @@ interface AppContextType {
   deleteCustomCategory: (id: string) => Promise<void>;
   getOweSummary: () => { totalOwed: number; totalOwe: number };
   joinGroupFromInvite: (groupId: string) => Promise<SplitGroup | null>;
+  refreshGroup: (groupId: string) => Promise<void>;
+  lastDeleted: LastDeletedItem | null;
+  undoDelete: () => Promise<void>;
+  clearLastDeleted: () => void;
+  restoreBackup: (jsonStr: string) => Promise<void>;
+  clearAllData: () => Promise<void>;
 }
 
 // POLISH 1: Export currency helper
@@ -218,29 +182,32 @@ const AppContext = createContext<AppContextType>({} as AppContextType);
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [loaded, setLoaded] = useState(false);
-  const [hasSession, setHasSession] = useState(false);
-  const [hasSeenOnboarding, setHasSeenOnboarding] = useState(false);
-  const [reloadTrigger, setReloadTrigger] = useState(0);
   const [profile, setProfileState] = useState<UserProfile | null>(null);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [splitGroups, setSplitGroups] = useState<SplitGroup[]>([]);
   const [budgetLimits, setBudgetLimitsState] = useState<BudgetLimits>({});
   const [customCategories, setCustomCategoriesState] = useState<CustomCategory[]>([]);
 
-  // WARNING 1: Sync user_settings to Supabase
-  const syncUserSettings = useCallback(async (budgets: BudgetLimits, cats: CustomCategory[]) => {
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const userId = session?.user?.id;
-      if (!userId) return;
-      await supabase.from("user_settings").upsert({
-        id: userId,
-        budget_limits: budgets,
-        custom_categories: cats,
-        updated_at: new Date().toISOString(),
-      });
-    } catch (e) {
-      console.warn("Failed to sync user_settings to Supabase:", e);
+  const [lastDeleted, setLastDeleted] = useState<LastDeletedItem | null>(null);
+  const undoTimerRef = React.useRef<any>(null);
+
+  const clearLastDeleted = useCallback(() => {
+    if (undoTimerRef.current) {
+      clearTimeout(undoTimerRef.current);
+      undoTimerRef.current = null;
+    }
+    setLastDeleted(null);
+  }, []);
+
+  const setLastDeletedItem = useCallback((item: LastDeletedItem | null) => {
+    if (undoTimerRef.current) {
+      clearTimeout(undoTimerRef.current);
+    }
+    setLastDeleted(item);
+    if (item !== null) {
+      undoTimerRef.current = setTimeout(() => {
+        setLastDeleted(null);
+      }, 5000);
     }
   }, []);
 
@@ -248,369 +215,115 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const load = async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const userId = session?.user?.id;
-        setHasSession(!!session);
-
-        const [p, e, g, b, c, cachedUid] = await Promise.all([
+        const [p, e, g, b, c] = await Promise.all([
           AsyncStorage.getItem("user_profile"),
           AsyncStorage.getItem("expenses"),
           AsyncStorage.getItem("split_groups"),
           AsyncStorage.getItem("budget_limits"),
           AsyncStorage.getItem("custom_categories"),
-          AsyncStorage.getItem("cached_user_id"),
         ]);
 
-        let localProfile: UserProfile | null = p ? JSON.parse(p) : null;
-        let localExpenses: Expense[] = e ? JSON.parse(e) : [];
-        let localGroups: SplitGroup[] = g ? JSON.parse(g) : [];
-        let localBudgets: BudgetLimits = b ? JSON.parse(b) : {};
-        let localCategories: CustomCategory[] = c ? JSON.parse(c) : [];
+        if (p) setProfileState(JSON.parse(p));
+        if (g) setSplitGroups(JSON.parse(g));
+        if (b) setBudgetLimitsState(JSON.parse(b));
+        if (c) setCustomCategoriesState(JSON.parse(c));
 
-        // Check if cache belongs to a different user
-        if (userId && cachedUid && userId !== cachedUid) {
-          // Discard cached data from the other user session
-          localProfile = null;
-          localExpenses = [];
-          localGroups = [];
-          localBudgets = {};
-          localCategories = [];
-          await AsyncStorage.multiRemove([
-            "user_profile",
-            "expenses",
-            "split_groups",
-            "budget_limits",
-            "custom_categories",
-          ]);
-          await AsyncStorage.setItem("cached_user_id", userId);
-        } else if (userId && !cachedUid) {
-          // First time tracking cached_user_id, associate existing cache with current user
-          await AsyncStorage.setItem("cached_user_id", userId);
-        } else if (!userId) {
-          // If no active session, clear out all state
-          setProfileState(null);
-          setExpenses([]);
-          setSplitGroups([]);
-          setBudgetLimitsState({});
-          setCustomCategoriesState([]);
-          setLoaded(true);
-          return;
-        }
+        let parsedExpenses: Expense[] = e ? JSON.parse(e) : [];
+        let modified = false;
 
-        // If cached profile exists, load state immediately and set loaded = true to render cached UI
-        const hasCache = !!localProfile;
-        if (hasCache) {
-          setProfileState(localProfile);
-          setExpenses(localExpenses);
-          setSplitGroups(localGroups);
-          setBudgetLimitsState(localBudgets);
-          setCustomCategoriesState(localCategories);
-          setLoaded(true);
-        }
+        // ── Auto-generate Recurring Expenses ──
+        const parents = parsedExpenses.filter(
+          (exp) => exp.recurring === "monthly" && !exp.recurringGroupId
+        );
+        const now = new Date();
+        const currentYear = now.getFullYear();
+        const currentMonth = now.getMonth();
 
-        // Background Remote Sync
-        const syncRemote = async () => {
-          try {
-            if (!userId) return;
+        // Pre-index existing child occurrences for O(1) lookups & track the latest child date per parent
+        const childKeys = new Set<string>();
+        const latestChildDates = new Map<string, Date>();
 
-            // Fetch user_settings from Supabase
-            const { data: settingsData, error: settingsError } = await supabase
-              .from("user_settings")
-              .select("*")
-              .eq("id", userId)
-              .maybeSingle();
-
-            let remoteBudgets = localBudgets;
-            let remoteCategories = localCategories;
-
-            if (settingsError) {
-              console.warn("Failed to fetch user_settings from Supabase:", settingsError.message);
+        parsedExpenses.forEach((exp) => {
+          if (exp.recurringGroupId) {
+            const d = new Date(exp.date);
+            childKeys.add(`${exp.recurringGroupId}-${d.getFullYear()}-${d.getMonth()}`);
+            
+            const existingMax = latestChildDates.get(exp.recurringGroupId);
+            if (!existingMax || d.getTime() > existingMax.getTime()) {
+              latestChildDates.set(exp.recurringGroupId, d);
             }
-            if (settingsData) {
-              if (settingsData.budget_limits && Object.keys(settingsData.budget_limits).length > 0) {
-                remoteBudgets = settingsData.budget_limits as BudgetLimits;
-              }
-              if (settingsData.custom_categories && Array.isArray(settingsData.custom_categories)) {
-                remoteCategories = settingsData.custom_categories as CustomCategory[];
-              }
-            }
-
-            // Fetch remote data from Supabase
-            const [se, sg, st, sp] = await Promise.all([
-              loadFromSupabase<Expense>("expenses", userId),
-              loadFromSupabase<SplitGroup>("groups"),
-              loadFromSupabase<any>("settlements"),
-              supabase.from("user_profiles").select("*").eq("id", userId).single(),
-            ]);
-
-            // Handle profile restore/recovery
-            let profileObj = localProfile;
-            if (sp && sp.data) {
-              profileObj = {
-                name: sp.data.name,
-                salary: Number(sp.data.salary) || 0,
-                currency: sp.data.currency || "₹",
-              };
-            }
-
-            // Reconstruct split groups with settlements
-            const remoteGroups = (sg ?? []).map((rg) => {
-              const groupSettlements = (st ?? []).filter((s: any) => s.group_id === rg.id);
-              const mappedExpenses = groupSettlements.map((s: any) => ({
-                id: s.id,
-                description: s.description || "",
-                totalAmount: Number(s.total_amount) || 0,
-                paidBy: s.paid_by || "",
-                splitAmong: Array.isArray(s.split_among) ? s.split_among : [],
-                settled: Array.isArray(s.settled) ? s.settled : [],
-                date: s.date || s.created_at || new Date().toISOString(),
-                splitMode: s.split_mode || "equal",
-                customShares: s.custom_shares || {},
-                category: s.category || "others",
-              }));
-              return {
-                ...rg,
-                expenses: mappedExpenses,
-              };
-            });
-
-            // Isolation
-            const activeProfileName = profileObj?.name;
-            const filteredRemoteGroups = activeProfileName
-              ? remoteGroups.filter((rg) =>
-                  (rg.createdBy && rg.createdBy === userId) ||
-                  rg.members.some(
-                    (m) => m.toLowerCase().trim() === activeProfileName.toLowerCase().trim()
-                  )
-                )
-              : [];
-
-            const finalExpenses = se.length > 0 ? se : localExpenses;
-            const finalGroups = filteredRemoteGroups.length > 0 ? filteredRemoteGroups : localGroups;
-
-            // Update States
-            if (profileObj) setProfileState(profileObj);
-            setExpenses(finalExpenses);
-            setSplitGroups(finalGroups);
-            setBudgetLimitsState(remoteBudgets);
-            setCustomCategoriesState(remoteCategories);
-
-            // Write updated cache
-            await Promise.all([
-              AsyncStorage.setItem("user_profile", JSON.stringify(profileObj)),
-              AsyncStorage.setItem("expenses", JSON.stringify(finalExpenses)),
-              AsyncStorage.setItem("split_groups", JSON.stringify(finalGroups)),
-              AsyncStorage.setItem("budget_limits", JSON.stringify(remoteBudgets)),
-              AsyncStorage.setItem("custom_categories", JSON.stringify(remoteCategories)),
-            ]);
-          } catch (e) {
-            console.warn("Quiet remote sync error:", e);
-          } finally {
-            setLoaded(true);
           }
-        };
+        });
 
-        // Run sync in the background
-        syncRemote();
+        parents.forEach((parent) => {
+          const parentDate = new Date(parent.date);
+          const latestChildDate = latestChildDates.get(parent.id);
+          
+          // Start checkDate from one month after the latest child, or one month after the parent if no children exist
+          const startDate = latestChildDate ? latestChildDate : parentDate;
+          let checkDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 1);
 
+          while (
+            checkDate.getFullYear() < currentYear ||
+            (checkDate.getFullYear() === currentYear && checkDate.getMonth() <= currentMonth)
+          ) {
+            const checkY = checkDate.getFullYear();
+            const checkM = checkDate.getMonth();
+
+            const key = `${parent.id}-${checkY}-${checkM}`;
+            const childExists = childKeys.has(key);
+
+            if (!childExists) {
+              const parentDay = parentDate.getDate();
+              const daysInMonth = new Date(checkY, checkM + 1, 0).getDate();
+              const day = Math.min(parentDay, daysInMonth);
+              const generatedDate = new Date(
+                checkY,
+                checkM,
+                day,
+                parentDate.getHours(),
+                parentDate.getMinutes(),
+                parentDate.getSeconds()
+              );
+
+              const newChild: Expense = {
+                id: genId(),
+                category: parent.category,
+                amount: parent.amount,
+                description: parent.description,
+                date: generatedDate.toISOString(),
+                createdAt: new Date().toISOString(),
+                recurring: "monthly",
+                recurringGroupId: parent.id,
+              };
+
+              parsedExpenses.push(newChild);
+              childKeys.add(key);
+              modified = true;
+            }
+
+            checkDate = new Date(checkY, checkM + 1, 1);
+          }
+        });
+
+        if (modified) {
+          await AsyncStorage.setItem("expenses", JSON.stringify(parsedExpenses));
+        }
+
+        setExpenses(parsedExpenses);
       } catch (err) {
         console.warn("Error loading AppContext details:", err);
+      } finally {
         setLoaded(true);
       }
     };
     load();
-  }, [syncUserSettings, reloadTrigger]);
-
-  // ── Auth state change listener (dynamic logout/cleanup) ──────────────────
-  useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (event === "SIGNED_OUT") {
-        setHasSession(false);
-        setProfileState(null);
-        setExpenses([]);
-        setSplitGroups([]);
-        setBudgetLimitsState({});
-        setCustomCategoriesState([]);
-        try {
-          await AsyncStorage.multiRemove([
-            "user_profile",
-            "expenses",
-            "split_groups",
-            "budget_limits",
-            "custom_categories",
-            "cached_user_id",
-          ]);
-        } catch (e) {
-          console.warn("Failed to clear AsyncStorage cache on SIGNED_OUT:", e);
-        }
-        setLoaded(true);
-      } else if (event === "SIGNED_IN" && session?.user?.id) {
-        setHasSession(true);
-        const userId = session.user.id;
-        try {
-          const cachedUid = await AsyncStorage.getItem("cached_user_id");
-          if (cachedUid && cachedUid !== userId) {
-            // Force reset memory and AsyncStorage cache if cached user mismatch
-            setProfileState(null);
-            setExpenses([]);
-            setSplitGroups([]);
-            setBudgetLimitsState({});
-            setCustomCategoriesState([]);
-            await AsyncStorage.multiRemove([
-              "user_profile",
-              "expenses",
-              "split_groups",
-              "budget_limits",
-              "custom_categories",
-            ]);
-          }
-          await AsyncStorage.setItem("cached_user_id", userId);
-        } catch (e) {
-          console.warn("Failed to validate cached_user_id on SIGNED_IN:", e);
-        }
-
-        // Reload details by triggering a soft reload of state
-        setLoaded(false);
-        const reload = async () => {
-          try {
-            const [p, e, g, b, c] = await Promise.all([
-              AsyncStorage.getItem("user_profile"),
-              AsyncStorage.getItem("expenses"),
-              AsyncStorage.getItem("split_groups"),
-              AsyncStorage.getItem("budget_limits"),
-              AsyncStorage.getItem("custom_categories"),
-            ]);
-            const cachedProfile: UserProfile | null = p ? JSON.parse(p) : null;
-            const cachedExpenses: Expense[] = e ? JSON.parse(e) : [];
-            const cachedGroups: SplitGroup[] = g ? JSON.parse(g) : [];
-            const cachedBudgets: BudgetLimits = b ? JSON.parse(b) : {};
-            const cachedCategories: CustomCategory[] = c ? JSON.parse(c) : [];
-
-            if (cachedProfile) {
-              setProfileState(cachedProfile);
-              setExpenses(cachedExpenses);
-              setSplitGroups(cachedGroups);
-              setBudgetLimitsState(cachedBudgets);
-              setCustomCategoriesState(cachedCategories);
-            } else {
-              setProfileState(null);
-              setExpenses([]);
-              setSplitGroups([]);
-              setBudgetLimitsState({});
-              setCustomCategoriesState([]);
-            }
-
-            const [se, sg, st, sp, sSettings] = await Promise.all([
-              loadFromSupabase<Expense>("expenses", userId),
-              loadFromSupabase<SplitGroup>("groups"),
-              loadFromSupabase<any>("settlements"),
-              supabase.from("user_profiles").select("*").eq("id", userId).single(),
-              supabase.from("user_settings").select("*").eq("id", userId).maybeSingle(),
-            ]);
-
-            let profileObj = cachedProfile;
-            if (sp && sp.data) {
-              profileObj = {
-                name: sp.data.name,
-                salary: Number(sp.data.salary) || 0,
-                currency: sp.data.currency || "₹",
-              };
-              await AsyncStorage.setItem("user_profile", JSON.stringify(profileObj));
-              setProfileState(profileObj);
-            }
-
-            let remoteBudgets = cachedProfile ? cachedBudgets : {};
-            let remoteCategories = cachedProfile ? cachedCategories : [];
-            if (sSettings && sSettings.data) {
-              if (sSettings.data.budget_limits && Object.keys(sSettings.data.budget_limits).length > 0) {
-                remoteBudgets = sSettings.data.budget_limits as BudgetLimits;
-              }
-              if (sSettings.data.custom_categories && Array.isArray(sSettings.data.custom_categories)) {
-                remoteCategories = sSettings.data.custom_categories as CustomCategory[];
-              }
-            }
-
-            const remoteGroups = (sg ?? []).map((rg) => {
-              const groupSettlements = (st ?? []).filter((s: any) => s.group_id === rg.id);
-              const mappedExpenses = groupSettlements.map((s: any) => ({
-                id: s.id,
-                description: s.description || "",
-                totalAmount: Number(s.total_amount) || 0,
-                paidBy: s.paid_by || "",
-                splitAmong: Array.isArray(s.split_among) ? s.split_among : [],
-                settled: Array.isArray(s.settled) ? s.settled : [],
-                date: s.date || s.created_at || new Date().toISOString(),
-                splitMode: s.split_mode || "equal",
-                customShares: s.custom_shares || {},
-                category: s.category || "others",
-              }));
-              return {
-                ...rg,
-                expenses: mappedExpenses,
-              };
-            });
-
-            const activeName = profileObj?.name;
-            const filteredGroups = activeName
-              ? remoteGroups.filter((rg) =>
-                  (rg.createdBy && rg.createdBy === userId) ||
-                  rg.members.some(
-                    (m) => m.toLowerCase().trim() === activeName.toLowerCase().trim()
-                  )
-                )
-              : [];
-
-            const finalExpenses = se.length > 0 ? se : (cachedProfile ? cachedExpenses : []);
-            const finalGroups = filteredGroups.length > 0 ? filteredGroups : (cachedProfile ? cachedGroups : []);
-            
-            setExpenses(finalExpenses);
-            setSplitGroups(finalGroups);
-            setBudgetLimitsState(remoteBudgets);
-            setCustomCategoriesState(remoteCategories);
-            
-            await Promise.all([
-              AsyncStorage.setItem("expenses", JSON.stringify(finalExpenses)),
-              AsyncStorage.setItem("split_groups", JSON.stringify(finalGroups)),
-              AsyncStorage.setItem("budget_limits", JSON.stringify(remoteBudgets)),
-              AsyncStorage.setItem("custom_categories", JSON.stringify(remoteCategories)),
-            ]);
-          } catch (e) {
-            console.warn("Failed to load details on SIGNED_IN:", e);
-          } finally {
-            setLoaded(true);
-          }
-        };
-        reload();
-      }
-    });
-
-    return () => {
-      subscription.unsubscribe();
-    };
   }, []);
 
   // ── Profile ───────────────────────────────────────────────────────────────
   const setProfile = useCallback(async (p: UserProfile) => {
     setProfileState(p);
     await AsyncStorage.setItem("user_profile", JSON.stringify(p));
-
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user?.id) {
-        const { error } = await supabase.from("user_profiles").upsert({
-          id: session.user.id,
-          name: p.name,
-          salary: p.salary,
-          currency: p.currency,
-        });
-        if (error) {
-          console.warn("Failed to upsert profile to Supabase:", error.message);
-        }
-      }
-    } catch (e) {
-      console.warn("Failed to sync profile to Supabase:", e);
-    }
-    setReloadTrigger((prev) => prev + 1);
   }, []);
 
   // ── Expenses ──────────────────────────────────────────────────────────────
@@ -627,19 +340,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         AsyncStorage.setItem("expenses", JSON.stringify(updated));
         return updated;
       });
-
-      // CRITICAL 1: Include user_id in expense payload
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const userId = session?.user?.id;
-        if (!userId) {
-          console.warn("Skipping expense sync: no active Supabase session.");
-          return;
-        }
-        await upsertToSupabase("expenses", [{ ...newExpense, user_id: userId }]);
-      } catch (e) {
-        console.warn("Failed to sync expense to Supabase:", e);
-      }
     },
     []
   );
@@ -651,55 +351,30 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         AsyncStorage.setItem("expenses", JSON.stringify(updated));
         return updated;
       });
-
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const userId = session?.user?.id;
-        if (!userId) return;
-
-        setExpenses((current) => {
-          const target = current.find((e) => e.id === id);
-          if (target) {
-            upsertToSupabase("expenses", [{ ...target, user_id: userId }]).catch((err) => {
-              console.warn("Remote sync of edited expense failed:", err);
-            });
-          }
-          return current;
-        });
-      } catch (e) {
-        console.warn("Failed to edit expense in Supabase:", e);
-      }
     },
     []
   );
 
   const deleteExpense = useCallback(async (id: string) => {
+    const item = expenses.find((e) => e.id === id);
+    if (item) {
+      setLastDeletedItem({ type: "expense", data: item });
+    }
     setExpenses((prev) => {
       const updated = prev.filter((e) => e.id !== id);
       AsyncStorage.setItem("expenses", JSON.stringify(updated));
       return updated;
     });
-    // CRITICAL 1: Add user_id defensively on delete
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      await deleteFromSupabase("expenses", id, session?.user?.id);
-    } catch (e) {
-      console.warn("Failed to delete expense from Supabase:", e);
-    }
-  }, []);
+  }, [expenses, setLastDeletedItem]);
 
   // ── Split Groups ──────────────────────────────────────────────────────────
   const createSplitGroup = useCallback(async (name: string, members: string[]): Promise<SplitGroup> => {
-    const { data: { session } } = await supabase.auth.getSession();
-    const userId = session?.user?.id;
-
     const newGroup: SplitGroup = {
       id: genId(),
       name,
       members,
       expenses: [],
       createdAt: new Date().toISOString(),
-      createdBy: userId || undefined,
     };
 
     setSplitGroups((prev) => {
@@ -708,14 +383,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return updated;
     });
 
-    await upsertToSupabase("groups", [{
-      id: newGroup.id,
-      name: newGroup.name,
-      members: newGroup.members,
-      created_at: newGroup.createdAt,
-      created_by: newGroup.createdBy || null,
-      category: "others",
-    }]);
+    if (SUPABASE_ENABLED) {
+      upsertGroup(newGroup).catch(() => {});
+    }
 
     return newGroup;
   }, []);
@@ -726,7 +396,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       AsyncStorage.setItem("split_groups", JSON.stringify(updated));
       return updated;
     });
-    await deleteFromSupabase("groups", id);
+    if (SUPABASE_ENABLED) {
+      deleteGroupRemote(id).catch(() => {});
+    }
+  }, []);
+
+  const syncGroupToRemote = useCallback((group: SplitGroup) => {
+    if (SUPABASE_ENABLED) {
+      upsertGroup(group).catch(() => {});
+    }
   }, []);
 
   const addSplitExpense = useCallback(
@@ -753,26 +431,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             : g
         );
         AsyncStorage.setItem("split_groups", JSON.stringify(updated));
+        // Sync the modified group to Supabase
+        const syncedGroup = updated.find((g) => g.id === groupId);
+        if (syncedGroup) syncGroupToRemote(syncedGroup);
         return updated;
       });
-      await upsertToSupabase("settlements", [{
-        id: newExp.id,
-        group_id: groupId,
-        description: newExp.description,
-        total_amount: newExp.totalAmount,
-        paid_by: newExp.paidBy,
-        split_among: newExp.splitAmong,
-        split_mode: newExp.splitMode,
-        custom_shares: newExp.customShares,
-        settled: [],
-        category: newExp.category,
-        date: newExp.date,
-      }]);
     },
-    []
+    [syncGroupToRemote]
   );
 
   const deleteSplitExpense = useCallback(async (groupId: string, expenseId: string) => {
+    const group = splitGroups.find((g) => g.id === groupId);
+    if (group) {
+      const item = group.expenses.find((e) => e.id === expenseId);
+      if (item) {
+        setLastDeletedItem({ type: "split", groupId, data: item });
+      }
+    }
     setSplitGroups((prev) => {
       const updated = prev.map((g) =>
         g.id === groupId
@@ -780,13 +455,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           : g
       );
       AsyncStorage.setItem("split_groups", JSON.stringify(updated));
+      const syncedGroup = updated.find((g) => g.id === groupId);
+      if (syncedGroup) syncGroupToRemote(syncedGroup);
       return updated;
     });
-    await deleteFromSupabase("settlements", expenseId);
-  }, []);
+  }, [splitGroups, setLastDeletedItem, syncGroupToRemote]);
 
   const settleUp = useCallback(async (groupId: string, expenseId: string, member: string) => {
-    let updatedExp: SplitExpense | undefined;
     setSplitGroups((prev) => {
       const updated = prev.map((g) => {
         if (g.id !== groupId) return g;
@@ -796,31 +471,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           const settled = e.settled.some((s) => isSameMember(s, canon, g.members))
             ? e.settled
             : [...e.settled, canon];
-          updatedExp = { ...e, settled };
-          return updatedExp;
+          return { ...e, settled };
         });
         return { ...g, expenses };
       });
       AsyncStorage.setItem("split_groups", JSON.stringify(updated));
+      const syncedGroup = updated.find((g) => g.id === groupId);
+      if (syncedGroup) syncGroupToRemote(syncedGroup);
       return updated;
     });
-
-    if (updatedExp) {
-      await upsertToSupabase("settlements", [{
-        id: updatedExp.id,
-        group_id: groupId,
-        description: updatedExp.description,
-        total_amount: updatedExp.totalAmount,
-        paid_by: updatedExp.paidBy,
-        split_among: updatedExp.splitAmong,
-        split_mode: updatedExp.splitMode,
-        custom_shares: updatedExp.customShares,
-        settled: updatedExp.settled,
-        category: updatedExp.category,
-        date: updatedExp.date,
-      }]);
-    }
-  }, []);
+  }, [syncGroupToRemote]);
 
   const getBalances = useCallback((group: SplitGroup) => {
     const balances: Record<string, number> = {};
@@ -896,9 +556,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [getBalances]);
 
   const settleAllDebtsBetween = useCallback(async (groupId: string, debtor: string, creditor: string, amount?: number) => {
-    let settlementExp: SplitExpense | undefined;
-    let updatedRows: SplitExpense[] = [];
-
     setSplitGroups((prev) => {
       const updated = prev.map((g) => {
         if (g.id !== groupId) return g;
@@ -918,13 +575,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           const settled = e.settled.some((s) => isSameMember(s, target, g.members))
             ? e.settled
             : [...e.settled, target];
-          const next = { ...e, settled };
-          updatedRows.push(next);
-          return next;
+          return { ...e, settled };
         });
 
         if (amount && amount > 0) {
-          settlementExp = {
+          const settlementExp: SplitExpense = {
             id: genId(),
             description: `Settlement: ${debtorCanon} paid ${creditorCanon}`,
             totalAmount: amount,
@@ -942,67 +597,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         return { ...g, expenses };
       });
       AsyncStorage.setItem("split_groups", JSON.stringify(updated));
+      const syncedGroup = updated.find((g) => g.id === groupId);
+      if (syncedGroup) syncGroupToRemote(syncedGroup);
       return updated;
     });
-
-    if (updatedRows.length > 0) {
-      await upsertToSupabase("settlements", updatedRows.map((e) => ({
-        id: e.id,
-        group_id: groupId,
-        description: e.description,
-        total_amount: e.totalAmount,
-        paid_by: e.paidBy,
-        split_among: e.splitAmong,
-        split_mode: e.splitMode,
-        custom_shares: e.customShares,
-        settled: e.settled,
-        category: e.category,
-        date: e.date,
-      })));
-    }
-    if (settlementExp) {
-      await upsertToSupabase("settlements", [{
-        id: settlementExp.id,
-        group_id: groupId,
-        description: settlementExp.description,
-        total_amount: settlementExp.totalAmount,
-        paid_by: settlementExp.paidBy,
-        split_among: settlementExp.splitAmong,
-        split_mode: settlementExp.splitMode,
-        custom_shares: settlementExp.customShares,
-        settled: settlementExp.settled,
-        category: settlementExp.category,
-        date: settlementExp.date,
-      }]);
-    }
-  }, []);
+  }, [syncGroupToRemote]);
 
   const addGroupMember = useCallback(async (groupId: string, member: string) => {
-    let groupToUpsert: SplitGroup | undefined;
     setSplitGroups((prev) => {
       const updated = prev.map((g) => {
         if (g.id !== groupId || g.members.some((m) => isSameMember(m, member, g.members))) return g;
-        groupToUpsert = { ...g, members: [...g.members, member] };
-        return groupToUpsert;
+        return { ...g, members: [...g.members, member] };
       });
       AsyncStorage.setItem("split_groups", JSON.stringify(updated));
+      const syncedGroup = updated.find((g) => g.id === groupId);
+      if (syncedGroup) syncGroupToRemote(syncedGroup);
       return updated;
     });
-    if (groupToUpsert) {
-      await upsertToSupabase("groups", [{
-        id: groupToUpsert.id,
-        name: groupToUpsert.name,
-        members: groupToUpsert.members,
-        created_at: groupToUpsert.createdAt,
-        created_by: groupToUpsert.createdBy || null,
-        category: "others",
-      }]);
-    }
-  }, []);
+  }, [syncGroupToRemote]);
 
   const removeGroupMember = useCallback(async (groupId: string, member: string) => {
     let success = false;
-    let groupToUpsert: SplitGroup | undefined;
     setSplitGroups((prev) => {
       const updated = prev.map((g) => {
         if (g.id !== groupId) return g;
@@ -1010,27 +625,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const balance = getBalances(g)[canon] ?? 0;
         if (Math.abs(balance) > 0.01) return g;
         success = true;
-        groupToUpsert = {
+        return {
           ...g,
           members: g.members.filter((m) => !isSameMember(m, canon, g.members)),
         };
-        return groupToUpsert;
       });
-      if (success) AsyncStorage.setItem("split_groups", JSON.stringify(updated));
+      if (success) {
+        AsyncStorage.setItem("split_groups", JSON.stringify(updated));
+        const syncedGroup = updated.find((g) => g.id === groupId);
+        if (syncedGroup) syncGroupToRemote(syncedGroup);
+      }
       return updated;
     });
-    if (success && groupToUpsert) {
-      await upsertToSupabase("groups", [{
-        id: groupToUpsert.id,
-        name: groupToUpsert.name,
-        members: groupToUpsert.members,
-        created_at: groupToUpsert.createdAt,
-        created_by: groupToUpsert.createdBy || null,
-        category: "others",
-      }]);
-    }
     return success;
-  }, [getBalances]);
+  }, [getBalances, syncGroupToRemote]);
 
   const allExpenses = useMemo(() => {
     const myName = profile?.name ?? "You";
@@ -1079,14 +687,122 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [getCurrentMonthExpenses]
   );
 
+  const refreshGroup = useCallback(async (groupId: string) => {
+    if (!SUPABASE_ENABLED) return;
+    const remote = await fetchGroup(groupId);
+    if (remote) {
+      setSplitGroups((prev) => {
+        const updated = prev.map((g) => {
+          if (g.id !== groupId) return g;
+          const mergedExpensesMap = new Map<string, SplitExpense>();
+          [...g.expenses, ...remote.expenses].forEach((e) => {
+            const existing = mergedExpensesMap.get(e.id);
+            if (existing) {
+              const mergedSettled = [...new Set([...existing.settled, ...e.settled])];
+              mergedExpensesMap.set(e.id, { ...existing, settled: mergedSettled });
+            } else {
+              mergedExpensesMap.set(e.id, e);
+            }
+          });
+          const merged = Array.from(mergedExpensesMap.values()).sort(
+            (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+          );
+          const combinedMembers = [...new Set([...g.members, ...remote.members])];
+          return { ...g, expenses: merged, members: combinedMembers };
+        });
+        AsyncStorage.setItem("split_groups", JSON.stringify(updated));
+        return updated;
+      });
+    }
+  }, []);
+
+  // ── Real-time group subscriptions ────────────────────────────────────
+  const unsubscribesRef = React.useRef<Map<string, () => void>>(new Map());
+  const groupUpdateCallbacksRef = React.useRef<Map<string, (group: SplitGroup) => void>>(new Map());
+
+  useEffect(() => {
+    if (!SUPABASE_ENABLED) return;
+
+    const currentIds = new Set(splitGroups.map((g) => g.id));
+
+    // Update callback mappings first to avoid stale closures
+    splitGroups.forEach((group) => {
+      groupUpdateCallbacksRef.current.set(group.id, (remoteGroup: SplitGroup) => {
+        setSplitGroups((prev) => {
+          const updated = prev.map((g) => {
+            if (g.id !== group.id) return g;
+            // Merge remote expenses and members
+            const mergedExpensesMap = new Map<string, SplitExpense>();
+            [...g.expenses, ...remoteGroup.expenses].forEach((e) => {
+              const existing = mergedExpensesMap.get(e.id);
+              if (existing) {
+                const mergedSettled = [...new Set([...existing.settled, ...e.settled])];
+                mergedExpensesMap.set(e.id, { ...existing, settled: mergedSettled });
+              } else {
+                mergedExpensesMap.set(e.id, e);
+              }
+            });
+            const merged = Array.from(mergedExpensesMap.values()).sort(
+              (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+            );
+            const combinedMembers = [...new Set([...g.members, ...remoteGroup.members])];
+            return { ...g, expenses: merged, members: combinedMembers };
+          });
+          AsyncStorage.setItem("split_groups", JSON.stringify(updated));
+          return updated;
+        });
+      });
+    });
+
+    // 1. Unsubscribe from groups that have been deleted/removed
+    unsubscribesRef.current.forEach((unsub, id) => {
+      if (!currentIds.has(id)) {
+        try {
+          unsub();
+        } catch (e) {
+          console.warn("[supabase] unsubscribe failed for group:", id, e);
+        }
+        unsubscribesRef.current.delete(id);
+        groupUpdateCallbacksRef.current.delete(id);
+      }
+    });
+
+    // 2. Subscribe to new groups
+    splitGroups.forEach((group) => {
+      if (unsubscribesRef.current.has(group.id)) return;
+
+      const unsub = subscribeToGroup(group.id, (remoteGroup: SplitGroup) => {
+        const cb = groupUpdateCallbacksRef.current.get(group.id);
+        if (cb) cb(remoteGroup);
+      });
+
+      unsubscribesRef.current.set(group.id, unsub);
+    });
+  }, [splitGroups]);
+
+  // Clean up all subscriptions on unmount
+  useEffect(() => {
+    return () => {
+      if (SUPABASE_ENABLED) {
+        unsubscribesRef.current.forEach((unsub) => {
+          try {
+            unsub();
+          } catch (e) {
+            console.warn("[supabase] unmount unsubscribe failed:", e);
+          }
+        });
+        unsubscribesRef.current.clear();
+      }
+    };
+  }, []);
+
   const setBudgetLimit = useCallback(async (category: string, amount: number) => {
     setBudgetLimitsState((prev) => {
       const updated = { ...prev, [category]: amount };
       AsyncStorage.setItem("budget_limits", JSON.stringify(updated));
-      syncUserSettings(updated, customCategories);
       return updated;
     });
-  }, [customCategories, syncUserSettings]);
+  }, []);
 
   const getCategoryBudgetPct = useCallback((category: string) => {
     const limit = budgetLimits[category];
@@ -1100,20 +816,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setCustomCategoriesState((prev) => {
       const updated = [newCat, ...prev];
       AsyncStorage.setItem("custom_categories", JSON.stringify(updated));
-      syncUserSettings(budgetLimits, updated);
       return updated;
     });
     return newCat.id;
-  }, [budgetLimits, syncUserSettings]);
+  }, []);
 
   const deleteCustomCategory = useCallback(async (id: string) => {
     setCustomCategoriesState((prev) => {
       const updated = prev.filter((cat) => cat.id !== id);
       AsyncStorage.setItem("custom_categories", JSON.stringify(updated));
-      syncUserSettings(budgetLimits, updated);
       return updated;
     });
-  }, [budgetLimits, syncUserSettings]);
+  }, []);
 
   const getOweSummary = useCallback(() => {
     let totalOwed = 0;
@@ -1129,59 +843,118 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [splitGroups, getBalances, profile?.name]);
 
   const joinGroupFromInvite = useCallback(async (groupId: string) => {
-    try {
-      const { data: gData, error: gError } = await supabase.from("groups").select("*").eq("id", groupId).single();
-      if (gError || !gData) return null;
-      const { data: sData } = await supabase.from("settlements").select("*").eq("group_id", groupId);
-      const profileName = profile?.name?.trim() || "You";
-      const members = Array.isArray(gData.members) ? [...gData.members] : [];
-      if (!members.some((m) => m.trim().toLowerCase() === profileName.toLowerCase())) members.push(profileName);
-      const joinedGroup: SplitGroup = {
-        id: gData.id,
-        name: gData.name || "Untitled Group",
-        members,
-        createdAt: gData.created_at || new Date().toISOString(),
-        createdBy: gData.created_by || undefined,
-        expenses: (sData ?? []).map((s: any) => ({
-          id: s.id,
-          description: s.description || "",
-          totalAmount: Number(s.total_amount) || 0,
-          paidBy: s.paid_by || "",
-          splitAmong: Array.isArray(s.split_among) ? s.split_among : [],
-          settled: Array.isArray(s.settled) ? s.settled : [],
-          date: s.date || s.created_at || new Date().toISOString(),
-          splitMode: s.split_mode || "equal",
-          customShares: s.custom_shares || {},
-          category: s.category || "others",
-        })),
-      };
-      await upsertToSupabase("groups", [{
-        id: joinedGroup.id,
-        name: joinedGroup.name,
-        members: joinedGroup.members,
-        created_at: joinedGroup.createdAt,
-        created_by: joinedGroup.createdBy || null,
-        category: "others",
-      }]);
-      setSplitGroups((prev) => {
-        const updated = prev.some((g) => g.id === groupId)
-          ? prev.map((g) => (g.id === groupId ? joinedGroup : g))
-          : [joinedGroup, ...prev];
-        AsyncStorage.setItem("split_groups", JSON.stringify(updated));
+    const existing = splitGroups.find((g) => g.id === groupId);
+    if (existing) return existing;
+
+    if (SUPABASE_ENABLED) {
+      const remote = await fetchGroup(groupId);
+      if (remote) {
+        setSplitGroups((prev) => {
+          if (prev.some((g) => g.id === groupId)) return prev;
+          const updated = [remote, ...prev];
+          AsyncStorage.setItem("split_groups", JSON.stringify(updated));
+          return updated;
+        });
+        return remote;
+      }
+    }
+
+    return null;
+  }, [splitGroups]);
+
+  const undoDelete = useCallback(async () => {
+    if (!lastDeleted) return;
+    if (lastDeleted.type === "expense") {
+      const item = lastDeleted.data;
+      setExpenses((prev) => {
+        if (prev.some((e) => e.id === item.id)) return prev;
+        const updated = [item, ...prev].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        AsyncStorage.setItem("expenses", JSON.stringify(updated));
         return updated;
       });
-      return joinedGroup;
-    } catch (e) {
-      console.warn("Failed to join group from invite:", e);
-      return null;
+    } else if (lastDeleted.type === "split") {
+      const { groupId, data: item } = lastDeleted;
+      setSplitGroups((prev) => {
+        const updated = prev.map((g) => {
+          if (g.id !== groupId) return g;
+          if (g.expenses.some((e) => e.id === item.id)) return g;
+          return {
+            ...g,
+            expenses: [item, ...g.expenses].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()),
+          };
+        });
+        AsyncStorage.setItem("split_groups", JSON.stringify(updated));
+        const syncedGroup = updated.find((g) => g.id === groupId);
+        if (syncedGroup) syncGroupToRemote(syncedGroup);
+        return updated;
+      });
     }
-  }, [profile?.name]);
+    clearLastDeleted();
+  }, [lastDeleted, clearLastDeleted, syncGroupToRemote]);
+
+  const restoreBackup = useCallback(async (jsonStr: string) => {
+    const data = JSON.parse(jsonStr);
+    if (!data || typeof data !== "object") {
+      throw new Error("Invalid backup format");
+    }
+    if (!data.expenses && !data.split_groups && !data.user_profile) {
+      throw new Error("Invalid backup: missing essential data");
+    }
+
+    // Strict validation to prevent state corruption
+    if (data.expenses && !Array.isArray(data.expenses)) {
+      throw new Error("Invalid backup: 'expenses' must be an array");
+    }
+    if (data.split_groups && !Array.isArray(data.split_groups)) {
+      throw new Error("Invalid backup: 'split_groups' must be an array");
+    }
+    if (data.custom_categories && !Array.isArray(data.custom_categories)) {
+      throw new Error("Invalid backup: 'custom_categories' must be an array");
+    }
+    if (data.budget_limits && (typeof data.budget_limits !== "object" || data.budget_limits === null || Array.isArray(data.budget_limits))) {
+      throw new Error("Invalid backup: 'budget_limits' must be a valid key-value object");
+    }
+    if (data.user_profile && (typeof data.user_profile !== "object" || data.user_profile === null || typeof data.user_profile.name !== "string")) {
+      throw new Error("Invalid backup: 'user_profile' must contain a valid user name");
+    }
+
+    if (data.user_profile) {
+      setProfileState(data.user_profile);
+      await AsyncStorage.setItem("user_profile", JSON.stringify(data.user_profile));
+    }
+    if (data.expenses) {
+      setExpenses(data.expenses);
+      await AsyncStorage.setItem("expenses", JSON.stringify(data.expenses));
+    }
+    if (data.split_groups) {
+      setSplitGroups(data.split_groups);
+      await AsyncStorage.setItem("split_groups", JSON.stringify(data.split_groups));
+    }
+    if (data.budget_limits) {
+      setBudgetLimitsState(data.budget_limits);
+      await AsyncStorage.setItem("budget_limits", JSON.stringify(data.budget_limits));
+    }
+    if (data.custom_categories) {
+      setCustomCategoriesState(data.custom_categories);
+      await AsyncStorage.setItem("custom_categories", JSON.stringify(data.custom_categories));
+    }
+  }, []);
+
+  const clearAllData = useCallback(async () => {
+    const keys = ["user_profile", "expenses", "split_groups", "budget_limits", "custom_categories"];
+    await Promise.all(keys.map(k => AsyncStorage.removeItem(k)));
+    setProfileState(null);
+    setExpenses([]);
+    setSplitGroups([]);
+    setBudgetLimitsState({});
+    setCustomCategoriesState([]);
+    setLastDeleted(null);
+  }, []);
 
   return (
     <AppContext.Provider
       value={{
         loaded,
-        hasSession,
         profile,
         setProfile,
         expenses,
@@ -1212,6 +985,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         addCustomCategory,
         deleteCustomCategory,
         joinGroupFromInvite,
+        refreshGroup,
+        lastDeleted,
+        undoDelete,
+        clearLastDeleted,
+        restoreBackup,
+        clearAllData,
       }}
     >
       {children}

@@ -2,7 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import * as Linking from "expo-linking";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
@@ -20,10 +20,16 @@ import {
   View,
   ActivityIndicator,
   KeyboardAvoidingView,
+  Animated,
+  RefreshControl,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useApp, SplitExpense, SplitMode, parseGroupName } from "@/context/AppContext";
+import { useApp, SplitExpense, SplitMode, parseGroupName, LastDeletedItem } from "@/context/AppContext";
 import { useColors } from "@/hooks/useColors";
+import { formatTable, formatKeyValue } from "@/lib/tableFormatter";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { SUPABASE_ENABLED } from "@/lib/config";
+import { adsManager } from "@/lib/ads";
 import {
   getExpenseMemberShare,
   isExpenseSettledFor,
@@ -50,7 +56,7 @@ const CATEGORIES = [
   { key: "others", label: "Others", icon: "ellipsis-horizontal", color: "#6b7280", bg: "#f0f2f5" },
 ];
 
-export default function SplitGroupDetail() {
+function SplitGroupDetail() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -67,6 +73,10 @@ export default function SplitGroupDetail() {
     deleteSplitExpense,
     profile,
     customCategories,
+    lastDeleted,
+    undoDelete,
+    clearLastDeleted,
+    refreshGroup,
   } = useApp();
 
   const getCategoryVisuals = (catKey: string) => {
@@ -111,6 +121,24 @@ export default function SplitGroupDetail() {
   }, [customCategories]);
 
   const group = splitGroups.find((g) => g.id === id);
+
+  // Animated Toast states for undo
+  const toastY = useRef(new Animated.Value(100)).current;
+  const toastOpacity = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (lastDeleted && lastDeleted.type === "split" && lastDeleted.groupId === id) {
+      Animated.parallel([
+        Animated.spring(toastY, { toValue: 0, damping: 15, stiffness: 100, useNativeDriver: true }),
+        Animated.timing(toastOpacity, { toValue: 1, duration: 250, useNativeDriver: true })
+      ]).start();
+    } else {
+      Animated.parallel([
+        Animated.timing(toastY, { toValue: 100, duration: 200, useNativeDriver: true }),
+        Animated.timing(toastOpacity, { toValue: 0, duration: 200, useNativeDriver: true })
+      ]).start();
+    }
+  }, [lastDeleted, id]);
 
   // States for Add Expense Modal
   const [modalVisible, setModalVisible] = useState(false);
@@ -178,6 +206,20 @@ export default function SplitGroupDetail() {
   const [searchQuery, setSearchQuery] = useState("");
   const [showSearch, setShowSearch] = useState(false);
   const [activeCategoryFilter, setActiveCategoryFilter] = useState("all");
+
+  const [refreshing, setRefreshing] = useState(false);
+
+  const onRefresh = async () => {
+    if (!id || !SUPABASE_ENABLED) return;
+    setRefreshing(true);
+    try {
+      await refreshGroup(id);
+    } catch (err) {
+      console.warn("[refresh] Group detail pull-to-refresh failed:", err);
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   const toggleCard = (expenseId: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -371,26 +413,36 @@ export default function SplitGroupDetail() {
   };
 
   const handleShare = async () => {
-    const lines: string[] = [];
-    lines.push(`Spendly Split Group: ${cleanName}`);
-    lines.push(`Members: ${group.members.join(", ")}`);
-    lines.push("");
-
-    lines.push("Balances:");
+    const memberBalances: string[][] = [];
     group.members.forEach((m) => {
       const bal = balances[m] ?? 0;
-      if (bal > 0) lines.push(`  ${m}: gets back ₹${bal.toFixed(0)}`);
-      else if (bal < 0) lines.push(`  ${m}: owes ₹${Math.abs(bal).toFixed(0)}`);
-      else lines.push(`  ${m}: settled`);
+      if (bal > 0) memberBalances.push([m, "gets back", `\u20b9${bal.toFixed(0)}`]);
+      else if (bal < 0) memberBalances.push([m, "owes", `\u20b9${Math.abs(bal).toFixed(0)}`]);
+      else memberBalances.push([m, "settled", "0"]);
     });
 
-    lines.push("");
-    lines.push(`Invite Code: ${group.id}`);
-    lines.push("");
-    lines.push("Join via Spendly Split tab -> Join Group!");
+    const balTable = formatTable("Balances", [
+      { header: "Member", width: 14, align: "left" as const },
+      { header: "Status", width: 12, align: "left" as const },
+      { header: "Amount", width: 10, align: "right" as const },
+    ], memberBalances);
+
+    const summary = formatKeyValue([
+      ["Group", cleanName],
+      ["Members", `${group.members.length}`],
+      ["Invite Code", group.id],
+    ]);
+
+    const message = [
+      summary,
+      ``,
+      balTable,
+      ``,
+      `Join via Spendly Split tab -> Join Group!`,
+    ].join("\n");
 
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    await Share.share({ message: lines.join("\n") });
+    await Share.share({ message });
   };
 
   const handleAddMember = async () => {
@@ -544,9 +596,12 @@ export default function SplitGroupDetail() {
             <Ionicons name="arrow-back" size={22} color="#fff" />
           </Pressable>
           <View style={{ flex: 1, marginLeft: 14 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
               <Text style={{ fontSize: 22 }}>{emoji}</Text>
               <Text style={s.groupName}>{cleanName}</Text>
+              {SUPABASE_ENABLED && (
+                <Ionicons name="cloud-done-outline" size={15} color="#fff" style={{ opacity: 0.8, marginLeft: 2 }} />
+              )}
             </View>
             <View style={s.headerSubRow}>
               {/* Member avatars */}
@@ -587,7 +642,19 @@ export default function SplitGroupDetail() {
       </LinearGradient>
 
       {/* Main Content Area */}
-      <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={s.scroll}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          SUPABASE_ENABLED ? (
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor={colors.primary}
+            />
+          ) : undefined
+        }
+      >
 
         {/* Who Owes Whom Simplified Collapsible Panel */}
         {!isFullySettled && simplified.length > 0 && (
@@ -1203,6 +1270,10 @@ export default function SplitGroupDetail() {
           <TouchableOpacity
             onPress={() => {
               const parsedVal = parseFloat(settleAmountInput) || 0;
+              if (parsedVal <= 0) {
+                Alert.alert("Invalid Amount", "Please enter a settlement amount greater than ₹0.");
+                return;
+              }
               handleSettleAll(settleFrom, settleTo, parsedVal);
             }}
             style={[s.confirmSettleBtn, { backgroundColor: colors.primary }]}
@@ -1523,7 +1594,7 @@ export default function SplitGroupDetail() {
           <Text style={s.fLabel}>Invite via Group Code</Text>
           
           <View style={s.inviteCodeContainer}>
-            <Text selectTextOnFocus style={s.inviteCodeText}>{group.id}</Text>
+            <Text style={s.inviteCodeText}>{group.id}</Text>
             <TouchableOpacity 
               onPress={() => {
                 Clipboard.setString(group.id);
@@ -1569,6 +1640,13 @@ export default function SplitGroupDetail() {
                 <Ionicons name="logo-whatsapp" size={16} color="#25d366" />
                 <Text style={[s.inviteShareLinkText, { color: "#25d366" }]}>WhatsApp</Text>
               </TouchableOpacity>
+            </View>
+
+            <View style={s.offlineWarningBox}>
+              <Ionicons name="information-circle-outline" size={15} color={colors.mutedForeground} style={{ marginRight: 6 }} />
+              <Text style={s.offlineWarningText}>
+                Since Spendly is 100% offline-first for maximum privacy, group split data remains stored locally on this device.
+              </Text>
             </View>
           </View>
         </KeyboardAvoidingView>
@@ -1634,7 +1712,38 @@ export default function SplitGroupDetail() {
           </TouchableOpacity>
         </View>
       </View>
+
+      {lastDeleted && lastDeleted.type === "split" && lastDeleted.groupId === id && (
+        <Animated.View style={[
+          s.toastContainer, 
+          { 
+            transform: [{ translateY: toastY }], 
+            opacity: toastOpacity,
+            bottom: bottomPad + 85
+          }
+        ]}>
+          <TouchableOpacity 
+            style={s.toastContent} 
+            onPress={async () => {
+              await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              await undoDelete();
+            }}
+            activeOpacity={0.9}
+          >
+            <Text style={s.toastText}>Split expense deleted.</Text>
+            <Text style={s.undoText}>Tap to Undo</Text>
+          </TouchableOpacity>
+        </Animated.View>
+      )}
     </View>
+  );
+}
+
+export default function SplitGroupDetailWithErrorBoundary() {
+  return (
+    <ErrorBoundary>
+      <SplitGroupDetail />
+    </ErrorBoundary>
   );
 }
 
@@ -2716,5 +2825,86 @@ const detailStyles = (
       color: colors.primary,
       fontSize: 12,
       fontFamily: "Inter_600SemiBold",
+    },
+    liveFeedbackCard: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      padding: 12,
+      borderRadius: 14,
+      borderWidth: 1,
+      marginBottom: 12,
+    },
+    liveFeedbackTitle: {
+      fontSize: 13,
+      fontFamily: "Inter_600SemiBold",
+      marginBottom: 2,
+    },
+    liveFeedbackText: {
+      fontSize: 12,
+      fontFamily: "Inter_400Regular",
+    },
+    allocateEqBtn: {
+      backgroundColor: colors.primary + "16",
+      borderWidth: 1,
+      borderColor: colors.primary + "40",
+      borderRadius: 12,
+      paddingHorizontal: 14,
+      paddingVertical: 8,
+    },
+    allocateEqBtnText: {
+      fontSize: 12,
+      fontFamily: "Inter_600SemiBold",
+      color: colors.primary,
+    },
+    offlineWarningBox: {
+      flexDirection: "row",
+      alignItems: "center",
+      backgroundColor: colors.muted + "30",
+      borderColor: colors.border,
+      borderWidth: 1.2,
+      borderRadius: 12,
+      padding: 10,
+      marginTop: 14,
+    },
+    offlineWarningText: {
+      flex: 1,
+      fontSize: 11,
+      fontFamily: "Inter_400Regular",
+      color: colors.mutedForeground,
+      lineHeight: 15,
+    },
+    toastContainer: {
+      position: "absolute",
+      left: 20,
+      right: 20,
+      alignSelf: "center",
+      zIndex: 9999,
+    },
+    toastContent: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      backgroundColor: colors.background === "#f4faf6" ? "rgba(240, 249, 244, 0.95)" : "rgba(30, 41, 35, 0.95)",
+      borderRadius: 14,
+      paddingVertical: 14,
+      paddingHorizontal: 18,
+      borderWidth: 1,
+      borderColor: colors.border,
+      shadowColor: "#000",
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.15,
+      shadowRadius: 10,
+      elevation: 6,
+    },
+    toastText: {
+      fontSize: 14,
+      fontFamily: "Inter_500Medium",
+      color: colors.foreground,
+    },
+    undoText: {
+      fontSize: 14,
+      fontFamily: "Inter_700Bold",
+      color: colors.primary,
     },
   });

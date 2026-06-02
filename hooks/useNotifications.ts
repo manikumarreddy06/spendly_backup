@@ -135,8 +135,13 @@ export async function cancelAllReminders(): Promise<void> {
 
 /** Parse "HH:MM" string into { hour, minute } */
 function parseTime(time: string): { hour: number; minute: number } {
-  const [h, m] = time.split(':').map(Number);
-  return { hour: h || 0, minute: m || 0 };
+  const parts = time.split(':');
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  return {
+    hour: isNaN(h) ? 0 : h,
+    minute: isNaN(m) ? 0 : m,
+  };
 }
 
 /**
@@ -145,16 +150,30 @@ function parseTime(time: string): { hour: number; minute: number } {
  */
 export async function scheduleReminders(times: string[]): Promise<void> {
   if (!Notifications) return;
-  
-  // Cancel old ones first
+
   await cancelAllReminders();
 
   for (let i = 0; i < times.length; i++) {
     const { hour, minute } = parseTime(times[i]);
 
     try {
+      // Schedule repeating daily alarm using the correct platform-specific trigger input
+      const trigger: any = Platform.select({
+        ios: {
+          type: Notifications.SchedulableTriggerInputTypes.CALENDAR,
+          hour,
+          minute,
+          repeats: true,
+        },
+        android: {
+          type: Notifications.SchedulableTriggerInputTypes.DAILY,
+          hour,
+          minute,
+        },
+      });
+
       await Notifications.scheduleNotificationAsync({
-        identifier: `${NOTIFICATION_IDENTIFIER_PREFIX}${i}`,
+        identifier: `${NOTIFICATION_IDENTIFIER_PREFIX}daily-${i}`,
         content: {
           title: '💰 Time to log your expenses!',
           body: "Don't forget to record what you spent. Tap to log now.",
@@ -166,12 +185,7 @@ export async function scheduleReminders(times: string[]): Promise<void> {
             priority: Notifications.AndroidNotificationPriority.MAX,
           }),
         },
-        trigger: {
-          type: Notifications.SchedulableTriggerInputTypes.DAILY,
-          hour,
-          minute,
-          repeats: true,
-        } as any,
+        trigger,
       });
     } catch (e) {
       console.warn(`Error scheduling reminder at index ${i}:`, e);
@@ -188,6 +202,15 @@ export async function applyReminderSettings(settings: ReminderSettings): Promise
   if (settings.enabled) {
     const activeTimes = settings.times.slice(0, settings.count);
     await scheduleReminders(activeTimes);
+    
+    // Explicitly cancel any leftover indices if reminder count was reduced (e.g. from 2 to 1)
+    for (let i = settings.count; i < 3; i++) {
+      try {
+        await Notifications.cancelScheduledNotificationAsync(`${NOTIFICATION_IDENTIFIER_PREFIX}daily-${i}`);
+      } catch (e) {
+        // Ignore if it wasn't scheduled
+      }
+    }
   } else {
     await cancelAllReminders();
   }

@@ -180,3 +180,39 @@ CREATE INDEX IF NOT EXISTS idx_expenses_user_id ON expenses(user_id);
 CREATE INDEX IF NOT EXISTS idx_groups_created_by ON groups(created_by);
 CREATE INDEX IF NOT EXISTS idx_settlements_group_id ON settlements(group_id);
 CREATE INDEX IF NOT EXISTS idx_user_settings_updated_at ON user_settings(updated_at);
+
+-- ============================================================================
+-- 9. SPLIT_GROUPS table (for no-auth cross-device split sync)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS public.split_groups (
+  id TEXT PRIMARY KEY,
+  data JSONB NOT NULL DEFAULT '{}'::jsonb,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Enable Row Level Security (RLS)
+ALTER TABLE public.split_groups ENABLE ROW LEVEL SECURITY;
+
+-- Enable Realtime replication for split_groups
+-- Run this in your Supabase project query editor to make sure realtime updates work!
+ALTER PUBLICATION supabase_realtime ADD TABLE public.split_groups;
+
+-- Policies for public/anon access (no auth, UUID-based group access)
+DROP POLICY IF EXISTS "Allow anon select on split_groups" ON public.split_groups;
+CREATE POLICY "Allow anon select on split_groups" ON public.split_groups
+  FOR SELECT TO anon USING (true);
+
+DROP POLICY IF EXISTS "Allow anon insert on split_groups" ON public.split_groups;
+CREATE POLICY "Allow anon insert on split_groups" ON public.split_groups
+  FOR INSERT TO anon WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow anon update on split_groups" ON public.split_groups;
+CREATE POLICY "Allow anon update on split_groups" ON public.split_groups
+  FOR UPDATE TO anon USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow anon delete on split_groups" ON public.split_groups;
+CREATE POLICY "Allow anon delete on split_groups" ON public.split_groups
+  FOR DELETE TO anon USING (true);
+
+CREATE INDEX IF NOT EXISTS idx_split_groups_updated_at ON split_groups(updated_at);
+

@@ -4,63 +4,66 @@
     "slug": "spendly-mobile",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/spendly_s_logo.png",
     "scheme": "spendly-mobile",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
-      "image": "./assets/images/icon.png",
+      "image": "./assets/images/splash_image.png",
       "resizeMode": "contain",
-      "backgroundColor": "#f4faf6"
+      "backgroundColor": "#030704"
     },
     "ios": {
-      "supportsTablet": false
+      "supportsTablet": false,
+      "bundleIdentifier": "com.spendlyapp.personal"
     },
     "android": {
-      "package": "com.spendly.app",
+      "package": "com.spendlyapp.personal",
+      "versionCode": 1,
+      "jsEngine": "hermes",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#f4faf6"
+        "foregroundImage": "./assets/images/spendly_s_logo.png",
+        "backgroundColor": "#030704"
       },
       "navigationBar": {
-        "backgroundColor": "#080c09",
+        "backgroundColor": "#030704",
         "barStyle": "light-content"
       },
       "permissions": [
-        "android.permission.RECEIVE_BOOT_COMPLETED",
-        "android.permission.SCHEDULE_EXACT_ALARM",
-        "android.permission.POST_NOTIFICATIONS",
-        "android.permission.USE_EXACT_ALARM"
+        "android.permission.POST_NOTIFICATIONS"
       ]
     },
     "web": {
-      "favicon": "./assets/images/icon.png"
+      "favicon": "./assets/images/spendly_s_logo.png"
     },
     "plugins": [
-      [
-        "expo-router",
-        {
-          "origin": "https://replit.com/"
-        }
-      ],
+      "expo-router",
       "expo-font",
-      "expo-web-browser",
       "expo-build-properties",
       "@react-native-community/datetimepicker",
       [
         "expo-notifications",
         {
-          "icon": "./assets/images/icon.png",
+          "icon": "./assets/images/spendly_s_logo.png",
           "color": "#18633f",
           "defaultChannel": "expense-reminders",
           "sounds": []
         }
+      ],
+      [
+        "react-native-google-mobile-ads",
+        {
+          "androidAppId": "ca-app-pub-3859841618293423~8371426177"
+        }
       ]
     ],
+    "react-native-google-mobile-ads": {
+      "android_app_id": "ca-app-pub-3859841618293423~8371426177",
+      "androidAppId": "ca-app-pub-3859841618293423~8371426177"
+    },
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
     }
   }
 }
-

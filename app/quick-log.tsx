@@ -1,4 +1,4 @@
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
@@ -17,36 +17,29 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  Alert,
+  Switch,
 } from 'react-native';
+import { InlineError } from '@/components/InlineError';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useApp, ExpenseCategory, CustomCategory } from '@/context/AppContext';
 import { useColors } from '@/hooks/useColors';
-import { getLastExpenseCategory, setLastExpenseCategory } from '@/lib/uxPrefs';
+import { getLastExpenseCategory, setLastExpenseCategory, getRecentCategories } from '@/lib/uxPrefs';
 import { evaluateMathExpression } from '@/lib/split';
+import { adsManager } from '@/lib/ads';
+import { BUILTIN_CATEGORIES } from '@/constants/categories';
 
-const GREEN = '#18633f';
-const GREEN_DARK = '#134830';
+
 
 type CategoryItem = {
   key: string;
   label: string;
   icon: string;
-  iconSet?: 'ion' | 'mci';
   color: string;
   bg: string;
 };
 
-const BUILTIN_CATEGORIES: CategoryItem[] = [
-  { key: 'food',          label: 'Food',          icon: 'silverware-fork-knife', iconSet: 'mci', color: '#f97316', bg: '#fff5e6' },
-  { key: 'travel',        label: 'Travel',        icon: 'airplane',              iconSet: 'ion', color: '#10b981', bg: '#e6f7f0' },
-  { key: 'shopping',      label: 'Shopping',      icon: 'bag-handle',            iconSet: 'ion', color: '#a855f7', bg: '#f5ebff' },
-  { key: 'entertainment', label: 'Fun',           icon: 'game-controller',       iconSet: 'ion', color: '#ec4899', bg: '#fdf0f5' },
-  { key: 'healthcare',    label: 'Health',        icon: 'heart',                 iconSet: 'ion', color: '#ef4444', bg: '#fdebeb' },
-  { key: 'others',        label: 'Others',        icon: 'ellipsis-horizontal',   iconSet: 'ion', color: '#6b7280', bg: '#f0f2f5' },
-];
-
-function CatIcon({ icon, iconSet, color, size = 20 }: { icon: string; iconSet?: 'ion' | 'mci'; color: string; size?: number }) {
-  if (iconSet === 'mci') return <MaterialCommunityIcons name={icon as any} size={size} color={color} />;
+function CatIcon({ icon, color, size = 20 }: { icon: string; color: string; size?: number }) {
   return <Ionicons name={icon as any} size={size} color={color} />;
 }
 
@@ -55,7 +48,6 @@ function customToItem(c: CustomCategory): CategoryItem {
     key: c.id,
     label: c.name,
     icon: c.icon,
-    iconSet: 'ion',
     color: c.color,
     bg: c.color + '18',
   };
@@ -74,8 +66,12 @@ export default function QuickLogScreen() {
   const [amount, setAmount] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('food');
   const [description, setDescription] = useState('');
+  const [isRecurring, setIsRecurring] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [recentKeys, setRecentKeys] = useState<string[]>([]);
+  const [hasInitializedCategory, setHasInitializedCategory] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
 
   // Success animation
   const successScale = useRef(new Animated.Value(0)).current;
@@ -92,29 +88,69 @@ export default function QuickLogScreen() {
     ]).start();
   }, []);
 
-  const allCategories: CategoryItem[] = useMemo(() => [
-    ...BUILTIN_CATEGORIES.map(c => ({
-      ...c,
-      bg: colors.background !== '#f4faf6' ? c.color + '25' : c.bg,
-    })),
-    ...(customCategories || []).map(customToItem),
-  ], [colors.background, customCategories]);
+  const allCategories: CategoryItem[] = useMemo(() => {
+    const list = [
+      ...BUILTIN_CATEGORIES.map(c => ({
+        ...c,
+        bg: colors.background !== '#f4faf6' ? c.color + '25' : c.bg,
+      })),
+      ...(customCategories || []).map(customToItem),
+    ];
+    if (recentKeys.length === 0) return list;
+    return [...list].sort((a, b) => {
+      const indexA = recentKeys.indexOf(a.key);
+      const indexB = recentKeys.indexOf(b.key);
+      if (indexA !== -1 && indexB !== -1) return indexA - indexB;
+      if (indexA !== -1) return -1;
+      if (indexB !== -1) return 1;
+      return 0;
+    });
+  }, [colors.background, customCategories, recentKeys]);
 
+  // Load last used category and recent categories once on mount
   useEffect(() => {
     let mounted = true;
-    getLastExpenseCategory('food').then((category) => {
+    Promise.all([
+      getLastExpenseCategory('food'),
+      getRecentCategories(),
+    ]).then(([category, recents]) => {
       if (!mounted) return;
-      const nextCategory = allCategories.some((cat) => cat.key === category)
+      setRecentKeys(recents);
+
+      const list = [
+        ...BUILTIN_CATEGORIES,
+        ...(customCategories || []).map(customToItem),
+      ];
+      const nextCategory = list.some((cat) => cat.key === category)
         ? category
-        : allCategories[0]?.key || 'food';
+        : list[0]?.key || 'food';
       setSelectedCategory(nextCategory);
+      setHasInitializedCategory(true);
     });
-    const timer = setTimeout(() => amountRef.current?.focus(), 260);
+
+    // Fast, smooth autofocus timing (60ms) to sync keyboard with slide-up
+    const timer = setTimeout(() => amountRef.current?.focus(), 60);
     return () => {
       mounted = false;
       clearTimeout(timer);
     };
-  }, [allCategories]);
+  }, []);
+
+  // Sync category if customCategories load/populate after mount (e.g. cold start notifications)
+  useEffect(() => {
+    if (hasInitializedCategory || !customCategories || customCategories.length === 0) return;
+
+    getLastExpenseCategory('food').then((category) => {
+      const list = [
+        ...BUILTIN_CATEGORIES,
+        ...customCategories.map(customToItem),
+      ];
+      if (list.some((cat) => cat.key === category)) {
+        setSelectedCategory(category);
+        setHasInitializedCategory(true);
+      }
+    });
+  }, [customCategories, hasInitializedCategory]);
 
   const activeCat = allCategories.find(c => c.key === selectedCategory) || allCategories[0];
 
@@ -133,6 +169,7 @@ export default function QuickLogScreen() {
     const parsed = resolvedAmt !== null ? resolvedAmt : parseFloat(amount);
     if (!amount || isNaN(parsed) || parsed <= 0) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setErrorMsg("Please enter a valid expense amount greater than zero.");
       return;
     }
 
@@ -143,6 +180,7 @@ export default function QuickLogScreen() {
         amount: parsed,
         description: description.trim() || activeCat.label,
         date: new Date().toISOString(),
+        recurring: isRecurring ? "monthly" : null,
       });
       await setLastExpenseCategory(selectedCategory);
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -153,7 +191,18 @@ export default function QuickLogScreen() {
         Animated.spring(successScale, { toValue: 1, useNativeDriver: true, damping: 12, stiffness: 180 }),
         Animated.timing(successOpacity, { toValue: 1, duration: 150, useNativeDriver: true }),
       ]).start(() => {
-        setTimeout(() => dismiss(), 900);
+        setTimeout(() => {
+          Keyboard.dismiss();
+          Animated.parallel([
+            Animated.timing(bgOpacity, { toValue: 0, duration: 150, useNativeDriver: true }),
+            Animated.timing(slideY, { toValue: 400, duration: 200, easing: Easing.in(Easing.ease), useNativeDriver: true }),
+          ]).start(() => {
+            router.back();
+            setTimeout(() => {
+              adsManager.showAdIfReady();
+            }, 100);
+          });
+        }, 900);
       });
     } catch (e) {
       setSaving(false);
@@ -183,8 +232,8 @@ export default function QuickLogScreen() {
         {/* Header */}
         <View style={s.header}>
           <View style={s.headerLeft}>
-            <View style={[s.headerIcon, { backgroundColor: GREEN + '18' }]}>
-              <Ionicons name="flash" size={18} color={GREEN} />
+            <View style={[s.headerIcon, { backgroundColor: colors.primary + "18" }]}>
+              <Ionicons name="flash" size={18} color={colors.primary} />
             </View>
             <Text style={s.headerTitle}>Quick Log</Text>
           </View>
@@ -197,7 +246,7 @@ export default function QuickLogScreen() {
             {/* Amount Input */}
             <View style={s.amountRow}>
               <View style={[s.amountCatIcon, { backgroundColor: activeCat.color + '18' }]}>
-                <CatIcon icon={activeCat.icon} iconSet={activeCat.iconSet} color={activeCat.color} size={15} />
+                <CatIcon icon={activeCat.icon} color={activeCat.color} size={15} />
               </View>
               <Text style={s.amountCatLabel}>{activeCat.label}</Text>
               <View style={s.amountDivider} />
@@ -206,7 +255,10 @@ export default function QuickLogScreen() {
                 ref={amountRef}
                 style={s.amountInput}
                 value={amount}
-                onChangeText={setAmount}
+                onChangeText={(val) => {
+                  setAmount(val);
+                  if (errorMsg) setErrorMsg('');
+                }}
                 keyboardType="numbers-and-punctuation"
                 placeholder="0"
                 placeholderTextColor={colors.mutedForeground + '60'}
@@ -223,6 +275,7 @@ export default function QuickLogScreen() {
                 }}
               />
             </View>
+            <InlineError message={errorMsg} visible={!!errorMsg} />
 
             {/* Category Chips */}
             <Text style={s.label}>Category</Text>
@@ -237,6 +290,9 @@ export default function QuickLogScreen() {
                 return (
                   <TouchableOpacity
                     key={cat.key}
+                    accessibilityLabel={`${cat.label} category`}
+                    accessibilityState={{ selected: active }}
+                    accessibilityRole="radio"
                     style={[
                       s.catChip,
                       {
@@ -250,7 +306,7 @@ export default function QuickLogScreen() {
                     }}
                     activeOpacity={0.75}
                   >
-                    <CatIcon icon={cat.icon} iconSet={cat.iconSet} color={active ? '#fff' : cat.color} size={16} />
+                    <CatIcon icon={cat.icon} color={active ? '#fff' : cat.color} size={16} />
                     <Text style={[s.catChipLabel, { color: active ? '#fff' : cat.color }]}>
                       {cat.label}
                     </Text>
@@ -259,7 +315,36 @@ export default function QuickLogScreen() {
               })}
             </ScrollView>
 
-            <View style={{ height: 16 }} />
+            {/* Note / Description */}
+            <Text style={s.label}>Note <Text style={s.optional}>(optional)</Text></Text>
+            <View style={s.noteWrap}>
+              <TextInput
+                style={s.noteInput}
+                placeholder="e.g. Lunch at cafe"
+                placeholderTextColor={colors.mutedForeground + '60'}
+                value={description}
+                onChangeText={setDescription}
+                returnKeyType="done"
+                onSubmitEditing={() => Keyboard.dismiss()}
+              />
+            </View>
+
+            {/* Recurring Toggle */}
+            <View style={s.toggleRow}>
+              <View style={s.toggleLeft}>
+                <Ionicons name="repeat-outline" size={18} color={colors.primary} style={{ marginRight: 8 }} />
+                <View>
+                  <Text style={s.toggleLabel}>Repeat Monthly</Text>
+                  <Text style={s.toggleSub}>Rent, subscription, EMI, etc.</Text>
+                </View>
+              </View>
+              <Switch
+                value={isRecurring}
+                onValueChange={setIsRecurring}
+                trackColor={{ false: colors.border, true: colors.primary + '60' }}
+                thumbColor={isRecurring ? colors.primary : colors.mutedForeground}
+              />
+            </View>
 
             {/* Save Button */}
             <TouchableOpacity
@@ -269,7 +354,7 @@ export default function QuickLogScreen() {
               disabled={saving || saved}
             >
               <LinearGradient
-                colors={[GREEN, GREEN_DARK]}
+                colors={[colors.primary, colors.primary]}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
                 style={s.saveBtnGradient}
@@ -405,7 +490,7 @@ function styles(
     rupee: {
       fontSize: 36,
       fontFamily: 'Inter_600SemiBold',
-      color: GREEN,
+      color: colors.primary,
       marginRight: 4,
     },
     amountInput: {
@@ -464,10 +549,34 @@ function styles(
       color: colors.foreground,
       minHeight: 38,
     },
+    toggleRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingVertical: 10,
+      marginBottom: 20,
+    },
+    toggleLeft: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      flex: 1,
+      marginRight: 10,
+    },
+    toggleLabel: {
+      fontSize: 14,
+      fontFamily: 'Inter_600SemiBold',
+      color: colors.foreground,
+    },
+    toggleSub: {
+      fontSize: 11,
+      fontFamily: 'Inter_400Regular',
+      color: colors.mutedForeground,
+      marginTop: 1,
+    },
     saveBtn: {
       borderRadius: 18,
       overflow: 'hidden',
-      shadowColor: GREEN,
+      shadowColor: colors.primary,
       shadowOffset: { width: 0, height: 6 },
       shadowOpacity: 0.35,
       shadowRadius: 12,
@@ -496,10 +605,10 @@ function styles(
       width: 96,
       height: 96,
       borderRadius: 48,
-      backgroundColor: GREEN,
+      backgroundColor: colors.primary,
       alignItems: 'center',
       justifyContent: 'center',
-      shadowColor: GREEN,
+      shadowColor: colors.primary,
       shadowOffset: { width: 0, height: 8 },
       shadowOpacity: 0.4,
       shadowRadius: 20,

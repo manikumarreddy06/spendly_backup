@@ -28,11 +28,11 @@ const colors = {
     input: "#d4e3d9",
 
     // Category colors
-    travel: "#3b82f6",
+    travel: "#10b981",
     food: "#f97316",
     shopping: "#a855f7",
-    entertainment: "#ec4899",
-    healthcare: "#ef4444",
+    entertainment: "#b45309",
+    healthcare: "#0ea5e9",
     others: "#6b7280",
   },
 
@@ -65,11 +65,11 @@ const colors = {
     input: "#233329",
 
     // Category colors
-    travel: "#60a5fa",
+    travel: "#34d399",
     food: "#fb923c",
     shopping: "#c084fc",
-    entertainment: "#f472b6",
-    healthcare: "#f87171",
+    entertainment: "#f59e0b",
+    healthcare: "#38bdf8",
     others: "#9ca3af",
   },
 

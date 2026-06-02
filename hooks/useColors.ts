@@ -25,7 +25,7 @@ export function useColors() {
 
   const palette =
     effectiveScheme === "dark" && "dark" in colors
-      ? (colors as Record<string, typeof colors.light>).dark
+      ? (colors as any).dark
       : colors.light;
   return { ...palette, radius: colors.radius };
 }

@@ -1,11 +1,13 @@
 import { Ionicons } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
 import * as Haptics from "expo-haptics";
-import { useMemo, useState } from "react";
+import { LinearGradient } from "expo-linear-gradient";
+import { useMemo, useState, useRef, useEffect } from "react";
 import {
   Alert,
   FlatList,
   Platform,
+  Pressable,
   ScrollView,
   Share,
   StyleSheet,
@@ -16,8 +18,10 @@ import {
   useColorScheme,
   Modal,
   KeyboardAvoidingView,
+  Animated,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { AnimatedListItem } from "@/components/AnimatedListItem";
 import { useThemePreference } from "@/hooks/useThemePreference";
 import {
   useApp,
@@ -28,55 +32,15 @@ import {
   parseGroupName,
 } from "@/context/AppContext";
 import { useColors } from "@/hooks/useColors";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { isSameMember, getExpenseMemberConsumptionShare, evaluateMathExpression } from "@/lib/split";
+import { BUILTIN_CATEGORIES, resolveExpenseMeta } from "@/constants/categories";
+import { formatTable, formatKeyValue } from "@/lib/tableFormatter";
+import { useRouter } from "expo-router";
 
-const BUILTIN_META: Record<
-  ExpenseCategory,
-  { label: string; icon: string; color: string; bg: string }
-> = {
-  travel: { label: "Travel", icon: "airplane", color: "#10b981", bg: "#e6f7f0" },
-  food: { label: "Food", icon: "restaurant", color: "#f97316", bg: "#fff5e6" },
-  shopping: { label: "Shopping", icon: "bag-handle", color: "#a855f7", bg: "#f5ebff" },
-  entertainment: { label: "Fun", icon: "game-controller", color: "#ec4899", bg: "#fdf0f5" },
-  healthcare: { label: "Health", icon: "heart", color: "#ef4444", bg: "#fdebeb" },
-  others: { label: "Others", icon: "ellipsis-horizontal", color: "#6b7280", bg: "#f0f2f5" },
-};
-
-const BUILTIN_KEYS = Object.keys(BUILTIN_META) as ExpenseCategory[];
+const BUILTIN_KEYS = BUILTIN_CATEGORIES.map((c) => c.key);
 
 type CatMeta = { label: string; icon: string; color: string; bg: string };
-
-function resolveExpenseMeta(
-  category: string | null | undefined,
-  customCategories: CustomCategory[],
-  colors: ReturnType<typeof useColors>
-): CatMeta {
-  if (category && category in BUILTIN_META) {
-    const builtin = BUILTIN_META[category as ExpenseCategory];
-    const color = (colors as any)[category] || colors.primary;
-    return {
-      ...builtin,
-      color,
-      bg: color + "18",
-    };
-  }
-  const custom = category ? customCategories.find((c) => c.id === category) : undefined;
-  if (custom) {
-    return {
-      label: custom.name,
-      icon: custom.icon,
-      color: custom.color,
-      bg: custom.color + "18",
-    };
-  }
-  const defaultColor = colors.mutedForeground;
-  return {
-    label: "Others",
-    icon: "ellipsis-horizontal",
-    color: defaultColor,
-    bg: defaultColor + "18",
-  };
-}
 
 type FilterChip = { key: string; meta: CatMeta };
 
@@ -92,14 +56,75 @@ interface HistoryItem {
 
 type Section = { title: string; total: number; data: HistoryItem[] };
 
-export default function HistoryScreen() {
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function fmt(n: number): string {
+  return Math.round(n).toLocaleString("en-IN");
+}
+
+const formatSpent = (amount: number) => {
+  if (amount === 0) return "₹0";
+  if (amount >= 100000) {
+    const val = amount / 100000;
+    return `₹${val % 1 === 0 ? val.toFixed(0) : val.toFixed(1)}L`;
+  }
+  if (amount >= 1000) {
+    const val = amount / 1000;
+    return `₹${val % 1 === 0 ? val.toFixed(0) : val.toFixed(1)}k`;
+  }
+  return `₹${amount}`;
+};
+
+function HistoryScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
-  const { expenses, editExpense, deleteExpense, customCategories, splitGroups, profile, getCurrentMonthExpenses } = useApp();
+  const router = useRouter();
+  const { expenses, editExpense, deleteExpense, deleteSplitExpense, customCategories, splitGroups, profile, getCurrentMonthExpenses, lastDeleted, undoDelete, clearLastDeleted } = useApp();
 
   const [query, setQuery] = useState("");
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
   const [searchFocused, setSearchFocused] = useState(false);
+
+  // Month navigation states & helpers
+  const [selectedDate, setSelectedDate] = useState(new Date());
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [pickerYear, setPickerYear] = useState(selectedDate.getFullYear());
+
+  const handlePrevMonth = async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const newDate = new Date(selectedDate.getFullYear(), selectedDate.getMonth() - 1, 1);
+    setSelectedDate(newDate);
+    setPickerYear(newDate.getFullYear());
+  };
+
+  const handleNextMonth = async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const newDate = new Date(selectedDate.getFullYear(), selectedDate.getMonth() + 1, 1);
+    setSelectedDate(newDate);
+    setPickerYear(newDate.getFullYear());
+  };
+
+  const handleOpenDatePicker = async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setPickerYear(selectedDate.getFullYear());
+    setShowDatePicker(true);
+  };
+
+  const handlePickerPrevYear = async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setPickerYear((prev) => prev - 1);
+  };
+
+  const handlePickerNextYear = async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setPickerYear((prev) => prev + 1);
+  };
+
+  const handleSelectMonth = async (monthIndex: number) => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setSelectedDate(new Date(pickerYear, monthIndex, 1));
+    setShowDatePicker(false);
+  };
 
   // Edit Modal States
   const [editingExpense, setEditingExpense] = useState<HistoryItem | null>(null);
@@ -108,23 +133,41 @@ export default function HistoryScreen() {
   const [editAmount, setEditAmount] = useState("");
   const [editCategory, setEditCategory] = useState("");
 
+  // Animated Toast states for undo
+  const toastY = useRef(new Animated.Value(100)).current;
+  const toastOpacity = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (lastDeleted && lastDeleted.type === "expense") {
+      Animated.parallel([
+        Animated.spring(toastY, { toValue: 0, damping: 15, stiffness: 100, useNativeDriver: true }),
+        Animated.timing(toastOpacity, { toValue: 1, duration: 250, useNativeDriver: true })
+      ]).start();
+    } else {
+      Animated.parallel([
+        Animated.timing(toastY, { toValue: 100, duration: 200, useNativeDriver: true }),
+        Animated.timing(toastOpacity, { toValue: 0, duration: 200, useNativeDriver: true })
+      ]).start();
+    }
+  }, [lastDeleted]);
+
   const topPad = Platform.OS === "web" ? 67 : insets.top;
+  const bottomPad = Platform.OS === "web" ? 34 : insets.bottom;
   const tabClearance = 72 + (Platform.OS === "ios" ? insets.bottom : 12);
 
   const scheme = useColorScheme();
   const { mode: themeMode } = useThemePreference();
   const effectiveTheme = themeMode === "system" ? scheme : themeMode;
+  const isDark = effectiveTheme === "dark";
+  const gradientColors = isDark 
+    ? ["#0b1610", "#080c09", "#080c09"] 
+    : ["#dff5e8", "#ecf7f0", "#f4faf6"];
 
   const filterChips = useMemo<FilterChip[]>(() => {
     const builtin: FilterChip[] = BUILTIN_KEYS.map((key) => {
-      const color = (colors as any)[key] || colors.primary;
       return {
         key,
-        meta: {
-          ...BUILTIN_META[key],
-          color,
-          bg: color + "18",
-        },
+        meta: resolveExpenseMeta(key, customCategories, colors),
       };
     });
     const custom: FilterChip[] = customCategories.map((c) => ({
@@ -215,80 +258,134 @@ export default function HistoryScreen() {
     return [...personal, ...shared];
   }, [expenses, splitGroups, myName, customCategories, colors]);
 
-  const filtered = allItems.filter((e) => {
-    const matchCat = activeFilter ? e.category === activeFilter : true;
-    const matchQ = query.trim()
-      ? e.description.toLowerCase().includes(query.toLowerCase()) ||
-        e.subtitle.toLowerCase().includes(query.toLowerCase())
-      : true;
-    return matchCat && matchQ;
-  });
+  const monthlySpentMap = useMemo(() => {
+    const map = Array(12).fill(0);
+    allItems.forEach((item) => {
+      if (!item.isDebit) return;
+      const d = new Date(item.date);
+      if (d.getFullYear() === pickerYear) {
+        const m = d.getMonth();
+        if (m >= 0 && m < 12) {
+          map[m] += item.amount;
+        }
+      }
+    });
+    return map;
+  }, [allItems, pickerYear]);
 
-  const sorted = [...filtered].sort(
-    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-  );
+  const filtered = useMemo(() => {
+    return allItems.filter((e) => {
+      const d = new Date(e.date);
+      const matchMonth = d.getFullYear() === selectedDate.getFullYear() && d.getMonth() === selectedDate.getMonth();
+      const matchCat = activeFilter ? e.category === activeFilter : true;
+      const matchQ = query.trim()
+        ? e.description.toLowerCase().includes(query.toLowerCase()) ||
+          e.subtitle.toLowerCase().includes(query.toLowerCase())
+        : true;
+      return matchMonth && matchCat && matchQ;
+    });
+  }, [allItems, selectedDate, activeFilter, query]);
 
-  const grouped: Record<string, HistoryItem[]> = {};
-  sorted.forEach((item) => {
-    const key = new Date(item.date).toLocaleDateString("en-IN", {
+  const sorted = useMemo(() => {
+    return [...filtered].sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+    );
+  }, [filtered]);
+
+  const grouped = useMemo(() => {
+    const groups: Record<string, HistoryItem[]> = {};
+    sorted.forEach((item) => {
+      const key = new Date(item.date).toLocaleDateString("en-IN", {
+        weekday: "short",
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      });
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(item);
+    });
+    return groups;
+  }, [sorted]);
+
+  const sections = useMemo<Section[]>(() => {
+    return Object.entries(grouped).map(([title, data]) => ({
+      title,
+      total: data.reduce((s, e) => s + (e.isDebit ? e.amount : 0), 0),
+      data,
+    }));
+  }, [grouped]);
+
+  const totalIncome = profile?.salary ?? 0;
+
+  const totalExpense = useMemo(() => {
+    return filtered.filter(e => e.isDebit).reduce((s, e) => s + e.amount, 0);
+  }, [filtered]);
+
+  const netBalance = totalIncome - totalExpense;
+
+  const currentMonthKey = useMemo(() => {
+    return selectedDate.toLocaleDateString("en-IN", {
       month: "long",
       year: "numeric",
     });
-    if (!grouped[key]) grouped[key] = [];
-    grouped[key].push(item);
-  });
-
-  const sections: Section[] = Object.entries(grouped).map(([title, data]) => ({
-    title,
-    total: data.reduce((s, e) => s + (e.isDebit ? e.amount : 0), 0),
-    data,
-  }));
-
-  const currentMonthKey = new Date().toLocaleDateString("en-IN", {
-    month: "long",
-    year: "numeric",
-  });
+  }, [selectedDate]);
 
   const handleShareMonthlyReport = async () => {
-    const currentExps = getCurrentMonthExpenses();
+    const personalExps = filtered.filter(e => e.isDebit && !e.id.includes("-"));
 
-    if (currentExps.length === 0) {
-      Alert.alert("No Data", "No expenses this month to share.");
+    if (personalExps.length === 0) {
+      Alert.alert("No Data", "No personal expenses this month to share.");
       return;
     }
 
-    const total = currentExps.reduce((s, e) => s + e.amount, 0);
+    const total = personalExps.reduce((s, e) => s + e.amount, 0);
     const byCategory: Record<string, number> = {};
-    currentExps.forEach((e) => {
+    personalExps.forEach((e) => {
       byCategory[e.category] = (byCategory[e.category] ?? 0) + e.amount;
     });
 
-    const lines = [
+        const mkLabel = (cat: string) => resolveExpenseMeta(cat, customCategories, colors).label;
+
+    const catRows = Object.entries(byCategory)
+      .sort((a, b) => b[1] - a[1])
+      .map(([cat, amt]) => [mkLabel(cat), `₹${amt.toLocaleString("en-IN")}`]);
+
+    const catTable = formatTable("Spending by Category", [
+      { header: "Category", width: 18, align: "left" as const },
+      { header: "Amount", width: 12, align: "right" as const },
+    ], catRows);
+
+    const topExps = [...personalExps]
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 5)
+      .map((e) => [e.description.slice(0, 30), `₹${e.amount.toLocaleString("en-IN")}`]);
+
+    const topTable = formatTable("Top Expenses", [
+      { header: "Description", width: 22, align: "left" as const },
+      { header: "Amount", width: 12, align: "right" as const },
+    ], topExps);
+
+    const summary = formatKeyValue([
+      ["Month", currentMonthKey],
+      ["Total Spent", `₹${total.toLocaleString("en-IN")}`],
+      ["Transactions", `${personalExps.length}`],
+    ]);
+
+    const message = [
       `Spendly Monthly Report`,
-      currentMonthKey,
       ``,
-      `Total Spent: ₹${total.toLocaleString("en-IN")}`,
-      `Transactions: ${currentExps.length}`,
+      summary,
       ``,
-      `By Category:`,
-      ...Object.entries(byCategory)
-        .sort((a, b) => b[1] - a[1])
-        .map(
-          ([cat, amt]) =>
-            `  ${resolveExpenseMeta(cat, customCategories, colors).label}: ₹${amt.toLocaleString("en-IN")}`
-        ),
+      catTable,
       ``,
-      `Top Expenses:`,
-      ...[...currentExps]
-        .sort((a, b) => b.amount - a.amount)
-        .slice(0, 5)
-        .map((e) => `  ${e.description}: ₹${e.amount.toLocaleString("en-IN")}`),
+      topTable,
       ``,
       `Tracked with Spendly`,
-    ];
+    ].join("\n");
 
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    await Share.share({ message: lines.join("\n") });
+    await Share.share({ message });
+
   };
 
   const handleDelete = (exp: HistoryItem) => {
@@ -299,13 +396,36 @@ export default function HistoryScreen() {
         style: "destructive",
         onPress: async () => {
           await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-          deleteExpense(exp.id);
+          if (exp.subtitle !== "Personal") {
+            const expenseId = exp.id.slice(-36);
+            const groupId = exp.id.slice(0, -37);
+            await deleteSplitExpense(groupId, expenseId);
+          } else {
+            deleteExpense(exp.id);
+          }
         },
       },
     ]);
   };
 
   const handleEditExpensePress = (item: HistoryItem) => {
+    if (item.subtitle !== "Personal") {
+      Alert.alert(
+        "Edit Split Expense",
+        "Split expenses must be edited in their respective split group.",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Go to Split Group",
+            onPress: () => {
+              const groupId = item.id.slice(0, -37);
+              router.push(`/split/${groupId}`);
+            },
+          },
+        ]
+      );
+      return;
+    }
     setEditingExpense(item);
     setEditDesc(item.description);
     setEditAmount(item.amount.toString());
@@ -384,7 +504,7 @@ export default function HistoryScreen() {
         <Text style={[s.txAmt, { color: isDebit ? colors.destructive : "#10b981" }]}>
           {isDebit ? "-" : "+"}₹{exp.amount.toLocaleString("en-IN")}
         </Text>
-        {isDebit && !exp.id.includes("-") ? (
+        {isDebit && exp.category !== "settlement" ? (
           <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginLeft: 8 }}>
             <TouchableOpacity
               testID={`button-edit-${exp.id}`}
@@ -410,6 +530,82 @@ export default function HistoryScreen() {
 
   return (
     <View style={s.root}>
+      {/* Premium Custom Month Selector Modal */}
+      {showDatePicker && (
+        <Modal
+          visible={showDatePicker}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowDatePicker(false)}
+        >
+          <Pressable style={s.pickerOverlay} onPress={() => setShowDatePicker(false)}>
+            <Pressable style={s.pickerCard} onPress={(e) => e.stopPropagation()}>
+              {isDark && (
+                <BlurView intensity={Platform.OS === "web" ? 0 : 90} tint="dark" style={StyleSheet.absoluteFill} />
+              )}
+              {/* Header: Select Month & Year Selector */}
+              <View style={s.pickerHeader}>
+                <Text style={s.pickerTitle}>Select Month</Text>
+                
+                {/* Year Switcher */}
+                <View style={s.yearSwitcher}>
+                  <TouchableOpacity onPress={handlePickerPrevYear} style={s.yearArrow} hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
+                    <Ionicons name="chevron-back" size={18} color={colors.foreground} />
+                  </TouchableOpacity>
+                  <Text style={s.yearText}>{pickerYear}</Text>
+                  <TouchableOpacity onPress={handlePickerNextYear} style={s.yearArrow} hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
+                    <Ionicons name="chevron-forward" size={18} color={colors.foreground} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* 3x4 Months Grid */}
+              <View style={s.monthsGrid}>
+                {MONTH_NAMES.map((monthName, index) => {
+                  const isSelected = selectedDate.getFullYear() === pickerYear && selectedDate.getMonth() === index;
+                  const spent = monthlySpentMap[index] || 0;
+                  
+                  return (
+                    <TouchableOpacity
+                      key={index}
+                      style={[
+                        s.monthGridCell,
+                        isSelected && s.monthGridCellActive
+                      ]}
+                      onPress={() => handleSelectMonth(index)}
+                    >
+                      <Text style={[
+                        s.monthNameText,
+                        isSelected && s.monthNameTextActive
+                      ]}>
+                        {monthName}
+                      </Text>
+                      <Text style={[
+                        s.monthSpentText,
+                        isSelected ? s.monthSpentTextActive : (spent > 0 ? s.monthSpentTextValue : s.monthSpentTextZero)
+                      ]} numberOfLines={1}>
+                        {formatSpent(spent)}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              {/* Cancel Button */}
+              <TouchableOpacity style={s.pickerCloseBtn} onPress={() => setShowDatePicker(false)}>
+                <Text style={s.pickerCloseBtnText}>Cancel</Text>
+              </TouchableOpacity>
+            </Pressable>
+          </Pressable>
+        </Modal>
+      )}
+
+      <LinearGradient
+        colors={gradientColors as any}
+        locations={[0, 0.35, 1]}
+        style={s.headerBg}
+      />
+
       <View style={s.header}>
         <View style={s.headerRow}>
           <View>
@@ -421,8 +617,8 @@ export default function HistoryScreen() {
             onPress={handleShareMonthlyReport}
             style={s.shareBtn}
           >
-            <BlurView intensity={90} tint={effectiveTheme === "dark" ? "dark" : "light"} style={s.shareBtnBlur}>
-              <Ionicons name="share-outline" size={18} color="#fff" />
+            <BlurView intensity={Platform.OS === "web" ? 0 : 90} tint={effectiveTheme === "dark" ? "dark" : "light"} style={s.shareBtnBlur}>
+              <Ionicons name="share-outline" size={18} color={isDark ? "#fff" : colors.primary} />
               <Text style={s.shareBtnText}>Report</Text>
             </BlurView>
           </TouchableOpacity>
@@ -433,13 +629,13 @@ export default function HistoryScreen() {
           <Ionicons
             name="search-outline"
             size={17}
-            color={searchFocused ? colors.primary : "rgba(255,255,255,0.6)"}
+            color={searchFocused ? colors.primary : (isDark ? "rgba(255,255,255,0.6)" : colors.mutedForeground)}
           />
           <TextInput
             testID="input-search"
             style={s.searchInput}
             placeholder="Search expenses..."
-            placeholderTextColor="rgba(255,255,255,0.5)"
+            placeholderTextColor={isDark ? "rgba(255,255,255,0.5)" : "rgba(0,0,0,0.4)"}
             value={query}
             onChangeText={setQuery}
             onFocus={() => setSearchFocused(true)}
@@ -448,9 +644,48 @@ export default function HistoryScreen() {
           />
           {query.length > 0 && (
             <TouchableOpacity onPress={() => setQuery("")}>
-              <Ionicons name="close-circle" size={16} color="rgba(255,255,255,0.6)" />
+              <Ionicons name="close-circle" size={16} color={isDark ? "rgba(255,255,255,0.6)" : colors.mutedForeground} />
             </TouchableOpacity>
           )}
+        </View>
+
+        {/* Month Selector Bar (Arrow picker + calendar trigger) */}
+        <View style={s.monthSelectorBar}>
+          <TouchableOpacity onPress={handlePrevMonth} style={s.arrowBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Ionicons name="chevron-back" size={20} color={colors.foreground} />
+          </TouchableOpacity>
+          
+          <TouchableOpacity onPress={handleOpenDatePicker} style={s.monthLabelBtn} activeOpacity={0.8}>
+            <Ionicons name="calendar-outline" size={15} color={colors.primary} style={{ marginRight: 6 }} />
+            <Text style={s.monthLabelText}>
+              {selectedDate.toLocaleDateString("en-IN", { month: "long", year: "numeric" })}
+            </Text>
+            <Ionicons name="chevron-down" size={11} color={colors.mutedForeground} style={{ marginLeft: 4 }} />
+          </TouchableOpacity>
+
+          <TouchableOpacity onPress={handleNextMonth} style={s.arrowBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Ionicons name="chevron-forward" size={20} color={colors.foreground} />
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* Month Summary stats (Money Manager inspired) */}
+      <View style={s.summaryStatsBar}>
+        <View style={s.statCol}>
+          <Text style={s.statColLabel}>Income</Text>
+          <Text style={[s.statColVal, { color: "#10b981" }]}>₹{fmt(totalIncome)}</Text>
+        </View>
+        <View style={s.statColDivider} />
+        <View style={s.statCol}>
+          <Text style={s.statColLabel}>Expense</Text>
+          <Text style={[s.statColVal, { color: "#f97316" }]}>₹{fmt(totalExpense)}</Text>
+        </View>
+        <View style={s.statColDivider} />
+        <View style={s.statCol}>
+          <Text style={s.statColLabel}>Total</Text>
+          <Text style={[s.statColVal, { color: netBalance >= 0 ? colors.primary : colors.destructive }]}>
+            {netBalance < 0 ? "-" : ""}₹{fmt(Math.abs(netBalance))}
+          </Text>
         </View>
       </View>
 
@@ -516,7 +751,9 @@ export default function HistoryScreen() {
                 </Text>
               </View>
               <View style={s.card}>
-                <BlurView intensity={Platform.OS === "web" ? 0 : 85} tint={effectiveTheme === "dark" ? "dark" : "light"} style={StyleSheet.absoluteFill} />
+                {isDark && (
+                  <BlurView intensity={Platform.OS === "web" ? 0 : 85} tint="dark" style={StyleSheet.absoluteFill} />
+                )}
                 {section.data.map((exp, i) => (
                   <View key={exp.id} style={i > 0 ? s.divider : undefined}>
                     {renderItem(exp)}
@@ -646,20 +883,54 @@ export default function HistoryScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      {lastDeleted && (lastDeleted.type === "expense" || lastDeleted.type === "split") && (
+        <Animated.View style={[
+          s.toastContainer, 
+          { 
+            transform: [{ translateY: toastY }], 
+            opacity: toastOpacity,
+            bottom: bottomPad + 76
+          }
+        ]}>
+          <TouchableOpacity 
+            style={s.toastContent} 
+            onPress={async () => {
+              await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              await undoDelete();
+            }}
+            activeOpacity={0.9}
+          >
+            <Text style={s.toastText}>Expense deleted.</Text>
+            <Text style={s.undoText}>Tap to Undo</Text>
+          </TouchableOpacity>
+        </Animated.View>
+      )}
     </View>
   );
 }
 
-const histStyles = (colors: ReturnType<typeof useColors>, topPad: number) =>
-  StyleSheet.create({
+const histStyles = (colors: ReturnType<typeof useColors>, topPad: number) => {
+  const isDark = colors.background !== "#f4faf6";
+  return StyleSheet.create({
     root: { flex: 1, backgroundColor: colors.background },
+    headerBg: {
+      position: "absolute",
+      top: 0,
+      left: 0,
+      right: 0,
+      height: 280,
+    },
     header: {
-      backgroundColor: colors.primary,
+      backgroundColor: isDark ? "rgba(30, 41, 35, 0.45)" : "rgba(255, 255, 255, 0.65)",
       paddingTop: topPad + 18,
-      paddingBottom: 18,
+      paddingBottom: 16,
       paddingHorizontal: 20,
-      borderBottomLeftRadius: 28,
-      borderBottomRightRadius: 28,
+      borderBottomLeftRadius: 24,
+      borderBottomRightRadius: 24,
+      borderBottomWidth: 1,
+      borderBottomColor: isDark ? "rgba(255, 255, 255, 0.12)" : colors.border,
+      marginBottom: 12,
     },
     headerRow: {
       flexDirection: "row",
@@ -667,18 +938,23 @@ const histStyles = (colors: ReturnType<typeof useColors>, topPad: number) =>
       justifyContent: "space-between",
       marginBottom: 16,
     },
-    headerTitle: { fontSize: 26, fontFamily: "Inter_700Bold", color: "#fff" },
+    headerTitle: { 
+      fontSize: 26, 
+      fontFamily: "Inter_700Bold", 
+      color: isDark ? "#fff" : colors.foreground 
+    },
     headerSub: {
       fontSize: 13,
       fontFamily: "Inter_400Regular",
-      color: "rgba(255,255,255,0.65)",
+      color: isDark ? "rgba(255,255,255,0.65)" : colors.mutedForeground,
       marginTop: 5,
     },
     shareBtn: {
       borderRadius: 18,
       overflow: "hidden",
       borderWidth: 1,
-      borderColor: "rgba(255,255,255,0.3)",
+      borderColor: isDark ? "rgba(255,255,255,0.3)" : colors.border,
+      backgroundColor: isDark ? "transparent" : colors.muted,
     },
     shareBtnBlur: {
       flexDirection: "row",
@@ -687,12 +963,16 @@ const histStyles = (colors: ReturnType<typeof useColors>, topPad: number) =>
       paddingHorizontal: 14,
       paddingVertical: 9,
     },
-    shareBtnText: { color: "#fff", fontSize: 13, fontFamily: "Inter_600SemiBold" },
+    shareBtnText: { 
+      color: isDark ? "#fff" : colors.primary, 
+      fontSize: 13, 
+      fontFamily: "Inter_600SemiBold" 
+    },
     searchWrap: {
       flexDirection: "row",
       alignItems: "center",
       gap: 10,
-      backgroundColor: "rgba(255,255,255,0.18)",
+      backgroundColor: isDark ? "rgba(255,255,255,0.18)" : "rgba(0, 0, 0, 0.05)",
       borderRadius: 13,
       paddingHorizontal: 13,
       height: 44,
@@ -701,14 +981,14 @@ const histStyles = (colors: ReturnType<typeof useColors>, topPad: number) =>
       overflow: "hidden",
     },
     searchFocused: {
-      backgroundColor: "rgba(255,255,255,0.25)",
-      borderColor: "rgba(255,255,255,0.6)",
+      backgroundColor: isDark ? "rgba(255,255,255,0.25)" : "rgba(0, 0, 0, 0.08)",
+      borderColor: colors.primary,
     },
     searchInput: {
       flex: 1,
       fontSize: 14,
       fontFamily: "Inter_400Regular",
-      color: "#fff",
+      color: isDark ? "#fff" : colors.foreground,
     },
     chipBar: { backgroundColor: colors.background },
     chipScroll: { paddingHorizontal: 16, paddingVertical: 12, gap: 9 },
@@ -747,11 +1027,11 @@ const histStyles = (colors: ReturnType<typeof useColors>, topPad: number) =>
     },
     sectionTotal: { fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.destructive },
     card: {
-      backgroundColor: colors.card,
+      backgroundColor: isDark ? "rgba(30, 41, 35, 0.45)" : colors.card,
       borderRadius: 16,
       overflow: "hidden",
       borderWidth: 1,
-      borderColor: colors.border,
+      borderColor: isDark ? "rgba(255, 255, 255, 0.12)" : colors.border,
       shadowColor: "#000",
       shadowOffset: { width: 0, height: 6 },
       shadowOpacity: 0.08,
@@ -891,4 +1171,216 @@ const histStyles = (colors: ReturnType<typeof useColors>, topPad: number) =>
       fontSize: 14,
       fontFamily: "Inter_600SemiBold",
     },
+    monthSelectorBar: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginTop: 14,
+      paddingVertical: 2,
+    },
+    arrowBtn: {
+      padding: 8,
+      borderRadius: 8,
+    },
+    monthLabelBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      borderRadius: 12,
+      backgroundColor: colors.background,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+    monthLabelText: {
+      fontSize: 14,
+      fontFamily: "Inter_600SemiBold",
+      color: colors.foreground,
+    },
+    summaryStatsBar: {
+      flexDirection: "row",
+      backgroundColor: colors.card,
+      paddingVertical: 14,
+      borderTopWidth: 1,
+      borderTopColor: colors.border,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+      alignItems: "center",
+      justifyContent: "space-around",
+    },
+    statCol: {
+      alignItems: "center",
+      flex: 1,
+    },
+    statColLabel: {
+      fontSize: 10,
+      fontFamily: "Inter_600SemiBold",
+      color: colors.mutedForeground,
+      textTransform: "uppercase",
+      letterSpacing: 0.5,
+    },
+    statColVal: {
+      fontSize: 14,
+      fontFamily: "Inter_700Bold",
+      marginTop: 4,
+    },
+    statColDivider: {
+      width: 1,
+      height: 24,
+      backgroundColor: colors.border,
+    },
+    pickerOverlay: {
+      flex: 1,
+      backgroundColor: "rgba(0,0,0,0.5)",
+      justifyContent: "center",
+      alignItems: "center",
+      padding: 20,
+    },
+    pickerCard: {
+      backgroundColor: isDark ? "rgba(30, 41, 35, 0.65)" : colors.card,
+      borderRadius: 24,
+      padding: 20,
+      width: "100%",
+      maxWidth: 340,
+      borderWidth: 1.5,
+      borderColor: isDark ? "rgba(255, 255, 255, 0.12)" : colors.border,
+      shadowColor: "#000",
+      shadowOffset: { width: 0, height: 10 },
+      shadowOpacity: 0.15,
+      shadowRadius: 20,
+      elevation: 8,
+      overflow: "hidden",
+    },
+    pickerHeader: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      paddingBottom: 16,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+      marginBottom: 16,
+    },
+    pickerTitle: {
+      fontSize: 16,
+      fontFamily: "Inter_700Bold",
+      color: colors.foreground,
+    },
+    yearSwitcher: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+    },
+    yearArrow: {
+      padding: 4,
+    },
+    yearText: {
+      fontSize: 15,
+      fontFamily: "Inter_700Bold",
+      color: colors.foreground,
+      minWidth: 40,
+      textAlign: "center",
+    },
+    monthsGrid: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      justifyContent: "space-between",
+      marginBottom: 6,
+    },
+    monthGridCell: {
+      width: "31%",
+      height: 54,
+      borderRadius: 12,
+      borderWidth: 1.5,
+      borderColor: colors.border,
+      backgroundColor: colors.background,
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 4,
+      marginBottom: 10,
+    },
+    monthGridCellActive: {
+      borderColor: colors.primary,
+      backgroundColor: colors.primary + "12",
+    },
+    monthNameText: {
+      fontSize: 13,
+      fontFamily: "Inter_600SemiBold",
+      color: colors.foreground,
+      marginBottom: 2,
+    },
+    monthNameTextActive: {
+      color: colors.primary,
+      fontFamily: "Inter_700Bold",
+    },
+    monthSpentText: {
+      fontSize: 10,
+      fontFamily: "Inter_500Medium",
+      textAlign: "center",
+    },
+    monthSpentTextActive: {
+      color: colors.primary,
+      fontFamily: "Inter_700Bold",
+    },
+    monthSpentTextValue: {
+      color: colors.destructive,
+    },
+    monthSpentTextZero: {
+      color: colors.mutedForeground,
+    },
+    pickerCloseBtn: {
+      alignItems: "center",
+      justifyContent: "center",
+      paddingVertical: 12,
+      borderTopWidth: 1,
+      borderTopColor: colors.border,
+      marginTop: 8,
+    },
+    pickerCloseBtnText: {
+      fontSize: 14,
+      fontFamily: "Inter_600SemiBold",
+      color: colors.mutedForeground,
+    },
+    toastContainer: {
+      position: "absolute",
+      left: 20,
+      right: 20,
+      alignSelf: "center",
+      zIndex: 9999,
+    },
+    toastContent: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      backgroundColor: isDark ? "rgba(30, 41, 35, 0.95)" : "rgba(240, 249, 244, 0.95)",
+      borderRadius: 14,
+      paddingVertical: 14,
+      paddingHorizontal: 18,
+      borderWidth: 1,
+      borderColor: colors.border,
+      shadowColor: "#000",
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.15,
+      shadowRadius: 10,
+      elevation: 6,
+    },
+    toastText: {
+      fontSize: 14,
+      fontFamily: "Inter_500Medium",
+      color: colors.foreground,
+    },
+    undoText: {
+      fontSize: 14,
+      fontFamily: "Inter_700Bold",
+      color: colors.primary,
+    },
   });
+};
+
+export default function HistoryScreenWithErrorBoundary() {
+  return (
+    <ErrorBoundary>
+      <HistoryScreen />
+    </ErrorBoundary>
+  );
+}

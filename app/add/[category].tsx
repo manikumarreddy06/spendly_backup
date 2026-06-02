@@ -15,6 +15,7 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  Switch,
 } from "react-native";
 import Animated, {
   useAnimatedStyle,
@@ -27,16 +28,17 @@ import { useApp, ExpenseCategory } from "@/context/AppContext";
 import { useColors } from "@/hooks/useColors";
 import { setLastExpenseCategory } from "@/lib/uxPrefs";
 import { evaluateMathExpression } from "@/lib/split";
+import { adsManager } from "@/lib/ads";
 
 const CAT_META: Record<
   ExpenseCategory,
   { label: string; icon: string; gradient: [string, string] }
 > = {
-  travel:        { label: "Travel",        icon: "airplane",                   gradient: ["#3b82f6", "#1d4ed8"] },
+  travel:        { label: "Travel",        icon: "airplane",                   gradient: ["#10b981", "#047857"] },
   food:          { label: "Food",          icon: "restaurant",                 gradient: ["#f97316", "#ea580c"] },
   shopping:      { label: "Shopping",      icon: "bag-handle",                 gradient: ["#a855f7", "#7c3aed"] },
-  entertainment: { label: "Entertainment", icon: "game-controller",            gradient: ["#ec4899", "#db2777"] },
-  healthcare:    { label: "Healthcare",    icon: "heart",                      gradient: ["#ef4444", "#dc2626"] },
+  entertainment: { label: "Coffee",        icon: "cafe",                       gradient: ["#b45309", "#78350f"] },
+  healthcare:    { label: "Fuel",          icon: "car",                        gradient: ["#0ea5e9", "#0284c7"] },
   others:        { label: "Others",        icon: "ellipsis-horizontal-circle", gradient: ["#6b7280", "#4b5563"] },
 };
 
@@ -69,6 +71,7 @@ export default function AddExpense() {
 
   const [amount, setAmount] = useState("");
   const [description, setDescription] = useState("");
+  const [isRecurring, setIsRecurring] = useState(false);
   const [date, setDate] = useState(new Date());
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [amtFocused, setAmtFocused] = useState(false);
@@ -105,6 +108,7 @@ export default function AddExpense() {
       amount: amt,
       description: description.trim() || meta.label,
       date: date.toISOString(),
+      recurring: isRecurring ? "monthly" : null,
     });
     await setLastExpenseCategory(cat);
 
@@ -113,6 +117,9 @@ export default function AddExpense() {
     setSuccess(true);
     setTimeout(() => {
       router.replace("/(tabs)");
+      setTimeout(() => {
+        adsManager.showAdIfReady();
+      }, 100);
     }, 1200);
   };
 
@@ -284,6 +291,23 @@ export default function AddExpense() {
                 </Modal>
               )}
 
+              {/* Recurring Toggle */}
+              <View style={s.toggleRow}>
+                <View style={s.toggleLeft}>
+                  <Ionicons name="repeat-outline" size={18} color={meta.gradient[0]} style={{ marginRight: 8 }} />
+                  <View>
+                    <Text style={s.toggleLabel}>Repeat Monthly</Text>
+                    <Text style={s.toggleSub}>Rent, subscription, EMI, etc.</Text>
+                  </View>
+                </View>
+                <Switch
+                  value={isRecurring}
+                  onValueChange={setIsRecurring}
+                  trackColor={{ false: colors.border, true: meta.gradient[0] + '60' }}
+                  thumbColor={isRecurring ? meta.gradient[0] : colors.mutedForeground}
+                />
+              </View>
+
               <Animated.View style={animStyle}>
                 <TouchableOpacity
                   testID="button-submit-expense"
@@ -426,6 +450,31 @@ const addStyles = (
       fontSize: 14,
       fontFamily: "Inter_500Medium",
       color: colors.foreground,
+    },
+    toggleRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingVertical: 10,
+      marginTop: 20,
+      marginBottom: 10,
+    },
+    toggleLeft: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      flex: 1,
+      marginRight: 10,
+    },
+    toggleLabel: {
+      fontSize: 14,
+      fontFamily: 'Inter_600SemiBold',
+      color: colors.foreground,
+    },
+    toggleSub: {
+      fontSize: 11,
+      fontFamily: 'Inter_400Regular',
+      color: colors.mutedForeground,
+      marginTop: 1,
     },
     iosPickerWrap: {
       marginTop: 8,

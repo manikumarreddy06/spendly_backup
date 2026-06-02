@@ -93,8 +93,9 @@ export default function InsightsScreen() {
     };
 
     return Object.entries(budgetLimits || {})
-      .filter(([, limit]) => limit > 0)
-      .map(([key, limit]) => {
+      .map(([key, limit]) => ({ key, limit: limit || 0 }))
+      .filter(({ limit }) => limit > 0)
+      .map(({ key, limit }) => {
         const spent = getSpentByCategory(key);
         const pct = Math.min((spent / limit) * 100, 100);
         return { key, limit, spent, pct, ...meta(key) };
@@ -123,7 +124,7 @@ export default function InsightsScreen() {
   return (
     <View style={s.root}>
       <LinearGradient
-        colors={gradientColors}
+        colors={gradientColors as any}
         locations={[0, 0.35, 1]}
         style={s.headerBg}
       />
