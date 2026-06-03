@@ -123,6 +123,13 @@ function ProfileTabScreen() {
             onPress={() => router.push("/profile")}
           />
           <QuickLink
+            icon="calendar-outline"
+            label="Recurring Bills"
+            subtitle="Manage subscriptions & monthly bills"
+            color="#3b82f6"
+            onPress={() => router.push("/recurring-bills")}
+          />
+          <QuickLink
             icon="cloud-outline"
             label={SUPABASE_ENABLED ? "Cloud Sync Active" : "Cloud Sync"}
             subtitle={SUPABASE_ENABLED ? "Groups synced in real-time" : "Connect for group sync"}

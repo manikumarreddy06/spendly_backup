@@ -193,6 +193,20 @@ export default function AddExpense() {
                   autoFocus
                 />
               </View>
+              {(() => {
+                if (amount.trim() && (amount.includes('+') || amount.includes('-') || amount.includes('*') || amount.includes('/'))) {
+                  const resolved = evaluateMathExpression(amount);
+                  if (resolved !== null && !isNaN(resolved) && resolved > 0) {
+                    return (
+                      <View style={s.mathPreviewContainer}>
+                        <Ionicons name="calculator-outline" size={12} color={meta.gradient[0]} />
+                        <Text style={[s.mathPreviewText, { color: meta.gradient[0] }]}>Total: ₹{Math.round(resolved).toLocaleString("en-IN")}</Text>
+                      </View>
+                    );
+                  }
+                }
+                return null;
+              })()}
 
               {/* Description */}
               <Text style={[s.label, { marginTop: 20 }]}>Description <Text style={{ color: colors.mutedForeground, fontFamily: "Inter_400Regular" }}>(optional)</Text></Text>
@@ -533,5 +547,22 @@ const addStyles = (
       fontSize: 24,
       fontFamily: "Inter_700Bold",
       color: colors.foreground,
+    },
+    mathPreviewContainer: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      alignSelf: 'flex-start',
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      borderRadius: 10,
+      backgroundColor: colors.background !== '#f4faf6' ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.02)',
+      borderWidth: 1,
+      borderColor: colors.border,
+      marginTop: 6,
+    },
+    mathPreviewText: {
+      fontSize: 12,
+      fontFamily: 'Inter_600SemiBold',
     },
   });

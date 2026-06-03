@@ -77,6 +77,7 @@ function SplitGroupDetail() {
     undoDelete,
     clearLastDeleted,
     refreshGroup,
+    syncStatus,
   } = useApp();
 
   const getCategoryVisuals = (catKey: string) => {
@@ -599,9 +600,7 @@ function SplitGroupDetail() {
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
               <Text style={{ fontSize: 22 }}>{emoji}</Text>
               <Text style={s.groupName}>{cleanName}</Text>
-              {SUPABASE_ENABLED && (
-                <Ionicons name="cloud-done-outline" size={15} color="#fff" style={{ opacity: 0.8, marginLeft: 2 }} />
-              )}
+              {SUPABASE_ENABLED && (() => { const s = syncStatus[group.id]; const icon = s === "connected" ? "cloud-done-outline" : s === "connecting" ? "sync-outline" : "cloud-offline-outline"; const color = s === "connected" ? "#4ade80" : s === "connecting" ? "#fbbf24" : "#f87171"; return <Ionicons name={icon} size={15} color={color} style={{ opacity: 0.9, marginLeft: 2 }} />; })()}
             </View>
             <View style={s.headerSubRow}>
               {/* Member avatars */}
@@ -1323,6 +1322,20 @@ function SplitGroupDetail() {
                 }}
               />
             </View>
+            {(() => {
+              if (totalAmt.trim() && (totalAmt.includes('+') || totalAmt.includes('-') || totalAmt.includes('*') || totalAmt.includes('/'))) {
+                const resolved = evaluateMathExpression(totalAmt);
+                if (resolved !== null && !isNaN(resolved) && resolved > 0) {
+                  return (
+                    <View style={s.mathPreviewContainer}>
+                      <Ionicons name="calculator-outline" size={12} color={colors.primary} />
+                      <Text style={s.mathPreviewText}>Total: ₹{Math.round(resolved).toLocaleString("en-IN")}</Text>
+                    </View>
+                  );
+                }
+              }
+              return null;
+            })()}
 
             {/* Title / Description */}
             <View style={[s.sheetInputWrap, focusedField === "desc" && s.inputFocused]}>
@@ -2905,6 +2918,23 @@ const detailStyles = (
     undoText: {
       fontSize: 14,
       fontFamily: "Inter_700Bold",
+      color: colors.primary,
+    },
+    mathPreviewContainer: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      alignSelf: 'center',
+      backgroundColor: colors.background !== '#f4faf6' ? 'rgba(16,185,129,0.12)' : '#ecfdf5',
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      borderRadius: 10,
+      marginTop: 4,
+      marginBottom: 10,
+    },
+    mathPreviewText: {
+      fontSize: 12,
+      fontFamily: 'Inter_600SemiBold',
       color: colors.primary,
     },
   });

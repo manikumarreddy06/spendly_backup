@@ -275,6 +275,20 @@ export default function QuickLogScreen() {
                 }}
               />
             </View>
+            {(() => {
+              if (amount.trim() && (amount.includes('+') || amount.includes('-') || amount.includes('*') || amount.includes('/'))) {
+                const resolved = evaluateMathExpression(amount);
+                if (resolved !== null && !isNaN(resolved) && resolved > 0) {
+                  return (
+                    <View style={s.mathPreviewContainer}>
+                      <Ionicons name="calculator-outline" size={12} color={colors.primary} />
+                      <Text style={s.mathPreviewText}>Total: ₹{Math.round(resolved).toLocaleString("en-IN")}</Text>
+                    </View>
+                  );
+                }
+              }
+              return null;
+            })()}
             <InlineError message={errorMsg} visible={!!errorMsg} />
 
             {/* Category Chips */}
@@ -619,6 +633,23 @@ function styles(
       fontFamily: 'Inter_700Bold',
       color: colors.foreground,
       marginTop: 16,
+    },
+    mathPreviewContainer: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      alignSelf: 'flex-start',
+      backgroundColor: isDark ? 'rgba(16,185,129,0.12)' : '#ecfdf5',
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      borderRadius: 10,
+      marginTop: -16,
+      marginBottom: 20,
+    },
+    mathPreviewText: {
+      fontSize: 12,
+      fontFamily: 'Inter_600SemiBold',
+      color: colors.primary,
     },
   });
 }

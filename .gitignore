@@ -79,3 +79,11 @@ obj/
 out/
 temp/
 tmp/
+
+# Local workspace scratch and utility files
+scratch/
+.commandcode/
+powershell.bat
+powershell.bat.log
+*.zip
+*.log

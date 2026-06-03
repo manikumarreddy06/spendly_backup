@@ -289,8 +289,7 @@ const styles = StyleSheet.create({
   },
   stepText: {
     fontSize: 11,
-    fontWeight: "700",
-    fontFamily: "System",
+    fontFamily: "Inter_700Bold",
     textTransform: "uppercase",
     letterSpacing: 0.5,
   },
@@ -300,8 +299,7 @@ const styles = StyleSheet.create({
   },
   skipBtnText: {
     fontSize: 13,
-    fontWeight: "600",
-    fontFamily: "System",
+    fontFamily: "Inter_600SemiBold",
   },
   cardBody: {
     flexDirection: "row",
@@ -322,14 +320,13 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 17,
-    fontWeight: "700",
     marginBottom: 4,
-    fontFamily: "System",
+    fontFamily: "Inter_700Bold",
   },
   description: {
     fontSize: 13,
     lineHeight: 18,
-    fontFamily: "System",
+    fontFamily: "Inter_400Regular",
   },
   cardFooter: {
     flexDirection: "row",
@@ -356,7 +353,6 @@ const styles = StyleSheet.create({
   nextBtnText: {
     color: "#ffffff",
     fontSize: 14,
-    fontWeight: "700",
-    fontFamily: "System",
+    fontFamily: "Inter_700Bold",
   },
 });

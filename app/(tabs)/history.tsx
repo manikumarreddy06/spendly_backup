@@ -814,6 +814,21 @@ function HistoryScreen() {
                 />
               </View>
 
+              {(() => {
+                if (editAmount.trim() && (editAmount.includes('+') || editAmount.includes('-') || editAmount.includes('*') || editAmount.includes('/'))) {
+                  const resolved = evaluateMathExpression(editAmount);
+                  if (resolved !== null && !isNaN(resolved) && resolved > 0) {
+                    return (
+                      <View style={s.mathPreviewContainer}>
+                        <Ionicons name="calculator-outline" size={12} color={colors.primary} />
+                        <Text style={s.mathPreviewText}>Total: ₹{Math.round(resolved).toLocaleString("en-IN")}</Text>
+                      </View>
+                    );
+                  }
+                }
+                return null;
+              })()}
+
               {/* Title / Description */}
               <Text style={s.fieldLabel}>Description</Text>
               <View style={s.sheetInputWrap}>
@@ -1112,6 +1127,24 @@ const histStyles = (colors: ReturnType<typeof useColors>, topPad: number) => {
       minWidth: 120,
       textAlign: "left",
       padding: 0,
+    },
+    mathPreviewContainer: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 6,
+      alignSelf: 'center',
+      backgroundColor: isDark ? 'rgba(16,185,129,0.12)' : '#ecfdf5',
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      borderRadius: 10,
+      marginTop: -6,
+      marginBottom: 16,
+    },
+    mathPreviewText: {
+      fontSize: 12,
+      fontFamily: 'Inter_600SemiBold',
+      color: colors.primary,
     },
     fieldLabel: {
       fontSize: 12,

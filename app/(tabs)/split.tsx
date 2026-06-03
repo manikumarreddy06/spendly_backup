@@ -44,7 +44,7 @@ function SplitScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { splitGroups, createSplitGroup, deleteSplitGroup, getOweSummary, joinGroupFromInvite, profile, getBalances, refreshGroup } = useApp();
+  const { splitGroups, createSplitGroup, deleteSplitGroup, getOweSummary, joinGroupFromInvite, profile, getBalances, refreshGroup, syncStatus } = useApp();
 
   const [modalVisible, setModalVisible] = useState(false);
   const [createStep, setCreateStep] = useState(1); // 1: Info, 2: Members
@@ -662,7 +662,24 @@ function SplitScreen() {
                 </View>
                 
                 <View style={{ flex: 1, marginLeft: 14 }}>
-                  <Text style={s.groupName}>{cleanName}</Text>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+                    <Text style={s.groupName} numberOfLines={1}>{cleanName}</Text>
+                    {SUPABASE_ENABLED && (() => {
+                      const sState = syncStatus?.[group.id];
+                      if (!sState) return null;
+                      const icon = sState === "connected" 
+                        ? "cloud-done-outline" 
+                        : sState === "connecting" 
+                        ? "sync-outline" 
+                        : "cloud-offline-outline";
+                      const color = sState === "connected" 
+                        ? "#10b981" 
+                        : sState === "connecting" 
+                        ? "#fbbf24" 
+                        : "#ef4444";
+                      return <Ionicons name={icon} size={13} color={color} style={{ opacity: 0.8 }} />;
+                    })()}
+                  </View>
                   <Text style={s.groupActivity} numberOfLines={1}>{activityText}</Text>
                   <Text style={s.groupUpdated}>{getGroupRelativeTime(group)}</Text>
                   

@@ -40,6 +40,7 @@ import { NativeAdCard } from "@/components/NativeAdCard";
 import { BalanceCard } from "@/components/BalanceCard";
 import { ReminderModal } from "@/components/ReminderModal";
 import { getDashboardInsights } from "@/lib/insights";
+import { loadReminderSettings } from "@/hooks/useNotifications";
 
 import { BUILTIN_CATEGORIES, resolveExpenseMeta } from "@/constants/categories";
 
@@ -212,6 +213,7 @@ function HomeScreen() {
     customCategories,
     getCurrentMonthTotal,
     getSpentByCategory,
+    budgetLimits,
   } = useApp();
 
   const salary = profile?.salary ?? 0;
@@ -271,6 +273,67 @@ function HomeScreen() {
   // ── Reminder Modal State (must be before derived values) ──
   const [reminderModalVisible, setReminderModalVisible] = useState(false);
 
+  // ── Bell animation state & load logic ──
+  const [remindersEnabled, setRemindersEnabled] = useState(true);
+  const bellAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    let isMounted = true;
+    loadReminderSettings().then((settings) => {
+      if (isMounted) {
+        setRemindersEnabled(settings.enabled);
+      }
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, [reminderModalVisible]);
+
+  useEffect(() => {
+    let animation: Animated.CompositeAnimation | null = null;
+    let timeoutId: any = null;
+    let isMounted = true;
+
+    if (!remindersEnabled) {
+      const wiggle = () => {
+        if (!isMounted) return;
+        bellAnim.setValue(0);
+        animation = Animated.sequence([
+          Animated.timing(bellAnim, { toValue: 1, duration: 100, useNativeDriver: true }),
+          Animated.timing(bellAnim, { toValue: -1, duration: 150, useNativeDriver: true }),
+          Animated.timing(bellAnim, { toValue: 1, duration: 150, useNativeDriver: true }),
+          Animated.timing(bellAnim, { toValue: -1, duration: 150, useNativeDriver: true }),
+          Animated.timing(bellAnim, { toValue: 0, duration: 100, useNativeDriver: true }),
+        ]);
+        animation.start((result) => {
+          if (result.finished && isMounted) {
+            timeoutId = setTimeout(() => {
+              wiggle();
+            }, 3000);
+          }
+        });
+      };
+      wiggle();
+    } else {
+      bellAnim.setValue(0);
+    }
+
+    return () => {
+      isMounted = false;
+      if (animation) {
+        animation.stop();
+      }
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [remindersEnabled]);
+
+  const bellRotate = bellAnim.interpolate({
+    inputRange: [-1, 0, 1],
+    outputRange: ["-18deg", "0deg", "18deg"],
+  });
+
   const [tourVisible, setTourVisible] = useState(false);
   const notifRef = useRef<any>(null);
   const budgetRef = useRef<any>(null);
@@ -296,7 +359,7 @@ function HomeScreen() {
             }
           });
         }
-      }, 350);
+      }, 650);
       return () => clearTimeout(timer);
     }
   }, [tourVisible]);
@@ -372,6 +435,33 @@ function HomeScreen() {
     Animated.spring(themeAnim, { toValue: isDark ? 1 : 0, useNativeDriver: true, speed: 12, bounciness: 8 }).start();
   }, [isDark]);
 
+  // Entrance animations
+  const greetOpacity = useRef(new Animated.Value(0)).current;
+  const greetTranslateY = useRef(new Animated.Value(15)).current;
+
+  const cardOpacity = useRef(new Animated.Value(0)).current;
+  const cardTranslateY = useRef(new Animated.Value(15)).current;
+
+  const bodyOpacity = useRef(new Animated.Value(0)).current;
+  const bodyTranslateY = useRef(new Animated.Value(20)).current;
+
+  useEffect(() => {
+    Animated.stagger(100, [
+      Animated.parallel([
+        Animated.timing(greetOpacity, { toValue: 1, duration: 400, useNativeDriver: true }),
+        Animated.spring(greetTranslateY, { toValue: 0, damping: 15, stiffness: 120, useNativeDriver: true }),
+      ]),
+      Animated.parallel([
+        Animated.timing(cardOpacity, { toValue: 1, duration: 450, useNativeDriver: true }),
+        Animated.spring(cardTranslateY, { toValue: 0, damping: 15, stiffness: 120, useNativeDriver: true }),
+      ]),
+      Animated.parallel([
+        Animated.timing(bodyOpacity, { toValue: 1, duration: 500, useNativeDriver: true }),
+        Animated.spring(bodyTranslateY, { toValue: 0, damping: 18, stiffness: 100, useNativeDriver: true }),
+      ]),
+    ]).start();
+  }, []);
+
   const toggleTheme = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     setThemeMode(isDark ? 'light' : 'dark');
@@ -412,57 +502,65 @@ function HomeScreen() {
         showsVerticalScrollIndicator={false}
       >
         {/* Header */}
-        <View style={s.header}>
-          <Text style={s.greetSub}>{greeting},</Text>
-          <View style={s.nameRow}>
-            <Text style={s.greetName} testID="text-greeting" numberOfLines={1}>
-              {displayName} 👋
-            </Text>
-            <View style={s.headerActions}>
-              {/* Animated Sun/Moon theme toggle */}
-              <TouchableOpacity
-                testID="button-theme-toggle"
-                style={s.themeToggleBtn}
-                onPress={toggleTheme}
-                activeOpacity={0.8}
-              >
-                <Animated.View style={[StyleSheet.absoluteFill, s.themeIconWrap, { opacity: sunOpacity, transform: [{ rotate: themeRotate }] }]}>
-                  <Ionicons name="sunny" size={20} color="#f59e0b" />
-                </Animated.View>
-                <Animated.View style={[StyleSheet.absoluteFill, s.themeIconWrap, { opacity: moonOpacity, transform: [{ rotate: themeRotate }] }]}>
-                  <Ionicons name="moon" size={18} color="#818cf8" />
-                </Animated.View>
-              </TouchableOpacity>
-              <View ref={notifRef} collapsable={false}>
+        <Animated.View style={{ opacity: greetOpacity, transform: [{ translateY: greetTranslateY }] }}>
+          <View style={s.header}>
+            <Text style={s.greetSub}>{greeting},</Text>
+            <View style={s.nameRow}>
+              <Text style={s.greetName} testID="text-greeting" numberOfLines={1}>
+                {displayName} 👋
+              </Text>
+              <View style={s.headerActions}>
+                {/* Animated Sun/Moon theme toggle */}
                 <TouchableOpacity
-                  testID="button-reminders"
-                  style={s.settingsBtn}
-                  onPress={() => setReminderModalVisible(true)}
+                  testID="button-theme-toggle"
+                  style={s.themeToggleBtn}
+                  onPress={toggleTheme}
                   activeOpacity={0.8}
                 >
-                  <Ionicons name="notifications-outline" size={20} color={colors.mutedForeground} />
+                  <Animated.View style={[StyleSheet.absoluteFill, s.themeIconWrap, { opacity: sunOpacity, transform: [{ rotate: themeRotate }] }]}>
+                    <Ionicons name="sunny" size={20} color="#f59e0b" />
+                  </Animated.View>
+                  <Animated.View style={[StyleSheet.absoluteFill, s.themeIconWrap, { opacity: moonOpacity, transform: [{ rotate: themeRotate }] }]}>
+                    <Ionicons name="moon" size={18} color="#818cf8" />
+                  </Animated.View>
                 </TouchableOpacity>
+                <View ref={notifRef} collapsable={false}>
+                  <TouchableOpacity
+                    testID="button-reminders"
+                    style={s.settingsBtn}
+                    onPress={() => setReminderModalVisible(true)}
+                    activeOpacity={0.8}
+                  >
+                    <Animated.View style={{ transform: [{ rotate: bellRotate }] }}>
+                      <Ionicons name="notifications-outline" size={20} color={colors.mutedForeground} />
+                    </Animated.View>
+                    {!remindersEnabled && <View style={s.bellRedDot} />}
+                  </TouchableOpacity>
+                </View>
               </View>
             </View>
+            <Text style={s.greetTagline}>Let's make today financially great.</Text>
           </View>
-          <Text style={s.greetTagline}>Let's make today financially great.</Text>
-        </View>
+        </Animated.View>
 
         {/* Balance card */}
-        <BalanceCard
-          ref={budgetRef}
-          totalBalance={totalBalance}
-          budgetLimit={budgetLimit}
-          spent={spent}
-          spentPct={spentPct}
-          spentPctRaw={spentPctRaw}
-          isDark={isDark}
-          primaryColor={colors.primary}
-          primaryDarkColor={isDark ? "#065f46" : "#134830"}
-        />
+        <Animated.View style={{ opacity: cardOpacity, transform: [{ translateY: cardTranslateY }] }}>
+          <BalanceCard
+            ref={budgetRef}
+            totalBalance={totalBalance}
+            budgetLimit={budgetLimit}
+            spent={spent}
+            spentPct={spentPct}
+            spentPctRaw={spentPctRaw}
+            isDark={isDark}
+            primaryColor={colors.primary}
+            primaryDarkColor={isDark ? "#065f46" : "#134830"}
+          />
+        </Animated.View>
 
-        {/* Monthly Insight Hero Section */}
-        <View style={s.insightHeroCard}>
+        <Animated.View style={{ opacity: bodyOpacity, transform: [{ translateY: bodyTranslateY }] }}>
+          {/* Monthly Insight Hero Section */}
+          <View style={s.insightHeroCard}>
           <View style={s.insightHeroHeader}>
             <Ionicons name="sparkles" size={14} color={colors.primary} />
             <Text style={[s.insightHeroTitle, { color: colors.primary }]}>MONTHLY INSIGHT</Text>
@@ -494,6 +592,7 @@ function HomeScreen() {
           <View style={s.grid}>
             {quickActionCategories.map((cat) => {
               const catSpent = getSpentByCategory(cat.key);
+              const limit = budgetLimits?.[cat.key] || 0;
               return (
                 <TouchableOpacity
                   key={cat.key}
@@ -509,6 +608,24 @@ function HomeScreen() {
                   </View>
                   <Text style={s.catLabel}>{cat.label}</Text>
                   <Text style={[s.catAmount, { color: cat.color }]}>₹{fmt(catSpent)}</Text>
+                  {limit > 0 && (
+                    <View style={s.miniProgressBarContainer}>
+                      <View
+                        style={[
+                          s.miniProgressBarFill,
+                          {
+                            width: `${Math.min(100, (catSpent / limit) * 100)}%`,
+                            backgroundColor:
+                              (catSpent / limit) >= 0.9
+                                ? colors.destructive
+                                : (catSpent / limit) >= 0.7
+                                ? "#f97316"
+                                : cat.color,
+                          },
+                        ]}
+                      />
+                    </View>
+                  )}
                 </TouchableOpacity>
               );
             })}
@@ -632,6 +749,7 @@ function HomeScreen() {
           </View>
         </View>
         <NativeAdCard />
+        </Animated.View>
       </ScrollView>
 
       {/* Reminders Modal */}
@@ -922,6 +1040,18 @@ function createStyles(colors: ReturnType<typeof useColors>, topPad: number, tabB
       fontFamily: "Inter_700Bold",
       marginTop: 2,
     },
+    miniProgressBarContainer: {
+      width: "80%",
+      height: 3,
+      backgroundColor: colors.border,
+      borderRadius: 1.5,
+      marginTop: 4,
+      overflow: "hidden",
+    },
+    miniProgressBarFill: {
+      height: "100%",
+      borderRadius: 1.5,
+    },
     addCatTile: {
       width: tileWidth,
       alignItems: "center",
@@ -1111,6 +1241,17 @@ function createStyles(colors: ReturnType<typeof useColors>, topPad: number, tabB
       marginTop: 6,
       textAlign: "center",
       lineHeight: 18,
+    },
+    bellRedDot: {
+      position: "absolute",
+      top: 10,
+      right: 10,
+      width: 8,
+      height: 8,
+      borderRadius: 4,
+      backgroundColor: "#ef4444",
+      borderWidth: 1.5,
+      borderColor: colors.card,
     },
 
 

@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   Platform,
   ScrollView,
@@ -12,14 +12,17 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Svg, { G, Rect, Text as SvgText } from "react-native-svg";
+import Svg, { G, Rect, Circle, Text as SvgText } from "react-native-svg";
+import * as Haptics from "expo-haptics";
 import { useApp } from "@/context/AppContext";
 import { useColors } from "@/hooks/useColors";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import {
   budgetBarColor,
   getCategoryBreakdown,
   getLast6Months,
   getMonthComparison,
+  calculateFinancialMetrics,
 } from "@/lib/insights";
 
 const GREEN = "#18633f";
@@ -28,7 +31,7 @@ function fmt(n: number): string {
   return Math.round(n).toLocaleString("en-IN");
 }
 
-export default function InsightsScreen() {
+function InsightsScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
@@ -41,6 +44,9 @@ export default function InsightsScreen() {
     getCurrentMonthExpenses,
     getSpentByCategory,
   } = useApp();
+
+  const [selectedCatKey, setSelectedCatKey] = useState<string | null>(null);
+  const [healthExpanded, setHealthExpanded] = useState(false);
 
   const topPad = Platform.OS === "web" ? 67 : insets.top;
   const tabClearance = 72 + (Platform.OS === "ios" ? insets.bottom : 12);
@@ -64,11 +70,15 @@ export default function InsightsScreen() {
   );
 
   const salary = profile?.salary ?? 0;
-  const remaining = salary > 0 ? Math.max(salary - totalSpent, 0) : 0;
 
   const catBreakdown = useMemo(
     () => getCategoryBreakdown(currentExps, customCategories),
     [currentExps, customCategories]
+  );
+
+  const metrics = useMemo(
+    () => calculateFinancialMetrics(currentExps, salary, (budgetLimits || {}) as Record<string, number>, customCategories),
+    [currentExps, salary, budgetLimits, customCategories]
   );
 
   const budgetEntries = useMemo(() => {
@@ -121,6 +131,14 @@ export default function InsightsScreen() {
     : ["#dff5e8", "#ecf7f0", "#f4faf6"];
   const s = createStyles(colors, topPad, tabClearance);
 
+  // Donut SVG Math
+  const donutRadius = 55;
+  const donutStrokeWidth = 14;
+  const donutSelectedStrokeWidth = 18;
+  const donutCircumference = 2 * Math.PI * donutRadius; // ~345.57
+  const donutSize = 150;
+  const centerPoint = donutSize / 2;
+
   return (
     <View style={s.root}>
       <LinearGradient
@@ -160,7 +178,7 @@ export default function InsightsScreen() {
             {/* 3 summary cards */}
             <View style={s.statRow}>
               <View style={s.statCard}>
-                <View style={[s.statIcon, { backgroundColor: colors.muted }]}>
+                <View style={[s.statIcon, { backgroundColor: isDark ? "rgba(16,185,129,0.12)" : "#ecfdf5" }]}>
                   <Ionicons name="wallet-outline" size={18} color={colors.primary} />
                 </View>
                 <Text style={s.statLabel}>This month</Text>
@@ -172,7 +190,7 @@ export default function InsightsScreen() {
                 <View
                   style={[
                     s.statIcon,
-                    { backgroundColor: comparison.improved ? colors.muted : (colors.destructive + "18") },
+                    { backgroundColor: comparison.improved ? (isDark ? "rgba(16,185,129,0.12)" : "#ecfdf5") : (colors.destructive + "18") },
                   ]}
                 >
                   <Ionicons
@@ -198,7 +216,7 @@ export default function InsightsScreen() {
               </View>
 
               <View style={s.statCard}>
-                <View style={[s.statIcon, { backgroundColor: "#eff6ff" }]}>
+                <View style={[s.statIcon, { backgroundColor: isDark ? "rgba(59,130,246,0.12)" : "#eff6ff" }]}>
                   <Ionicons name="analytics-outline" size={18} color="#3b82f6" />
                 </View>
                 <Text style={s.statLabel}>6-mo avg</Text>
@@ -207,111 +225,266 @@ export default function InsightsScreen() {
               </View>
             </View>
 
+            {/* Financial Wellness / Pacing Score Card */}
             {salary > 0 && (
-              <View style={s.salaryBanner}>
-                <Text style={s.salaryBannerText}>
-                  ₹{fmt(remaining)} left of ₹{fmt(salary)} monthly salary
-                </Text>
+              <View style={s.healthCard}>
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  onPress={async () => {
+                    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+                    setHealthExpanded(!healthExpanded);
+                  }}
+                >
+                  <View style={[s.healthHeader, { marginBottom: healthExpanded ? 16 : 0 }]}>
+                    <View style={s.healthIconBg}>
+                      <Ionicons name="heart-half-outline" size={24} color="#10b981" />
+                    </View>
+                    <View style={s.healthTitleContainer}>
+                      <Text style={s.healthTitle}>Financial Wellness</Text>
+                      <Text style={s.healthSub}>
+                        {healthExpanded ? "Real-time pacing & budget analysis" : "Tap to view wellness analysis"}
+                      </Text>
+                    </View>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                      <View style={s.scoreBadge}>
+                        <Text style={s.scoreLabel}>Score</Text>
+                        <Text style={s.scoreValue}>{metrics.spendingHealthScore}</Text>
+                      </View>
+                      <Ionicons
+                        name={healthExpanded ? "chevron-up" : "chevron-down"}
+                        size={16}
+                        color={colors.mutedForeground}
+                      />
+                    </View>
+                  </View>
+                </TouchableOpacity>
+
+                {healthExpanded && (
+                  <>
+                    <View style={s.healthDetailsRow}>
+                      <View style={s.healthProgressContainer}>
+                        <Svg width={70} height={70}>
+                          <Circle
+                            cx={35}
+                            cy={35}
+                            r={28}
+                            stroke={isDark ? "rgba(255,255,255,0.06)" : "rgba(16,185,129,0.1)"}
+                            strokeWidth={6}
+                            fill="none"
+                          />
+                          <Circle
+                            cx={35}
+                            cy={35}
+                            r={28}
+                            stroke={
+                              metrics.spendingHealthScore >= 80
+                                ? "#10b981"
+                                : metrics.spendingHealthScore >= 60
+                                ? "#f97316"
+                                : "#ef4444"
+                            }
+                            strokeWidth={6}
+                            fill="none"
+                            strokeLinecap="round"
+                            strokeDasharray={`${2 * Math.PI * 28}`}
+                            strokeDashoffset={`${2 * Math.PI * 28 * (1 - metrics.spendingHealthScore / 100)}`}
+                            rotation={-90}
+                            originX={35}
+                            originY={35}
+                          />
+                        </Svg>
+                        <View style={s.healthProgressCenter}>
+                          <Text style={s.healthProgressText}>{metrics.spendingHealthScore}%</Text>
+                        </View>
+                      </View>
+                      <View style={{ flex: 1, marginLeft: 16 }}>
+                        <Text style={s.healthStatusHeading}>
+                          {metrics.spendingHealthScore >= 85
+                            ? "Excellent Control"
+                            : metrics.spendingHealthScore >= 70
+                            ? "Healthy Spending"
+                            : metrics.spendingHealthScore >= 50
+                            ? "Attention Advised"
+                            : "Critical Budget Warning"}
+                        </Text>
+                        <Text style={s.healthDescription}>
+                          {metrics.overspendingForecastText || "No active budget restrictions detected."}
+                        </Text>
+                      </View>
+                    </View>
+
+                    <View style={s.burnRateContainer}>
+                      <View style={s.burnRateItem}>
+                        <Text style={s.burnRateLabel}>Daily Burn Rate</Text>
+                        <Text style={s.burnRateValue}>₹{fmt(metrics.dailyBurnRate)}</Text>
+                      </View>
+                      <View style={s.dividerVertical} />
+                      <View style={s.burnRateItem}>
+                        <Text style={s.burnRateLabel}>Projected Month Spend</Text>
+                        <Text style={s.burnRateValue}>₹{fmt(metrics.projectedSpend)}</Text>
+                      </View>
+                    </View>
+                  </>
+                )}
               </View>
             )}
 
-            {/* 6-month trend */}
+            {/* Category Distribution / Donut Chart */}
             <View style={s.card}>
-              <Text style={s.cardTitle}>6-Month Trend</Text>
-              <Text style={s.cardSub}>How your spending changes over time</Text>
-              {monthData.every((m) => m.total === 0) ? (
-                <Text style={s.hintCenter}>No history yet</Text>
-              ) : (
-                <>
-                  <Svg width={chartWidth} height={maxBarH + 40} style={{ marginTop: 12 }}>
-                    {monthData.map((month, i) => {
-                      const barH =
-                        month.total > 0
-                          ? Math.max((month.total / maxVal) * maxBarH, 6)
-                          : 4;
-                      const x = i * (barW + barGap);
-                      const y = maxBarH - barH;
-                      return (
-                        <G key={i}>
-                          {month.total > 0 && barH > 20 && (
-                            <SvgText
-                              x={x + barW / 2}
-                              y={y - 4}
-                              textAnchor="middle"
-                              fontSize={9}
-                              fill={month.isCurrent ? colors.primary : colors.mutedForeground}
-                            >
-                              {month.total >= 1000
-                                ? `${Math.round(month.total / 1000)}k`
-                                : String(Math.round(month.total))}
-                            </SvgText>
-                          )}
-                          <Rect
-                            x={x}
-                            y={y}
-                            width={barW}
-                            height={barH}
-                            rx={6}
-                            fill={month.isCurrent ? colors.primary : (isDark ? "#234231" : "#a7d4bc")}
-                          />
-                          <SvgText
-                            x={x + barW / 2}
-                            y={maxBarH + 18}
-                            textAnchor="middle"
-                            fontSize={10}
-                            fill={month.isCurrent ? colors.foreground : colors.mutedForeground}
-                          >
-                            {month.label}
-                          </SvgText>
-                        </G>
-                      );
-                    })}
-                  </Svg>
-                  <View style={s.chartLegend}>
-                    <View style={[s.legendDot, { backgroundColor: colors.primary }]} />
-                    <Text style={s.legendText}>Current month</Text>
-                    <View style={[s.legendDot, { backgroundColor: isDark ? "#234231" : "#a7d4bc", marginLeft: 12 }]} />
-                    <Text style={s.legendText}>Earlier</Text>
-                  </View>
-                </>
-              )}
-            </View>
+              <View style={s.cardHeaderRow}>
+                <View>
+                  <Text style={s.cardTitle}>What you're spending on</Text>
+                  <Text style={s.cardSub}>Tap a category or slice to filter details</Text>
+                </View>
+                {selectedCatKey !== null && (
+                  <TouchableOpacity
+                    onPress={async () => {
+                      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      setSelectedCatKey(null);
+                    }}
+                  >
+                    <Text style={s.link}>Clear Filter</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
 
-            {/* What you're spending on */}
-            <View style={s.card}>
-              <Text style={s.cardTitle}>What you're spending on</Text>
               {totalSpent === 0 ? (
                 <Text style={s.hintCenter}>No spending this month yet.</Text>
               ) : (
                 <>
-                  <View style={s.splitBar}>
-                    {catBreakdown.map((cat) => {
-                      const pct = (cat.amount / totalSpent) * 100;
-                      if (pct < 1) return null;
-                      return (
-                        <View
-                          key={cat.key}
-                          style={[s.splitSeg, { flex: pct, backgroundColor: cat.color }]}
+                  <View style={s.donutContainer}>
+                    <View style={s.donutWrapper}>
+                      <Svg width={donutSize} height={donutSize}>
+                        <Circle
+                          cx={centerPoint}
+                          cy={centerPoint}
+                          r={donutRadius}
+                          stroke={isDark ? "rgba(255,255,255,0.03)" : "rgba(16,185,129,0.06)"}
+                          strokeWidth={donutStrokeWidth - 4}
+                          fill="none"
                         />
+                        {(() => {
+                          let accumulatedPct = 0;
+                          return catBreakdown.map((cat) => {
+                            const pct = cat.amount / totalSpent;
+                            const strokeLength = pct * donutCircumference;
+                            // Add spacing between slices for a cleaner design
+                            const gapSize = catBreakdown.length > 1 ? 5 : 0;
+                            const renderStrokeLength = Math.max(strokeLength - gapSize, 1.5);
+                            const offset = -(accumulatedPct * donutCircumference);
+                            accumulatedPct += pct;
+
+                            const isSelected = selectedCatKey === cat.key;
+                            return (
+                              <Circle
+                                key={cat.key}
+                                cx={centerPoint}
+                                cy={centerPoint}
+                                r={donutRadius}
+                                stroke={cat.color}
+                                strokeWidth={isSelected ? donutSelectedStrokeWidth : donutStrokeWidth}
+                                fill="none"
+                                strokeDasharray={`${renderStrokeLength} ${donutCircumference - renderStrokeLength}`}
+                                strokeDashoffset={offset}
+                                rotation={-90}
+                                originX={centerPoint}
+                                originY={centerPoint}
+                                opacity={selectedCatKey === null || isSelected ? 1 : 0.35}
+                                onPress={async () => {
+                                  await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                  setSelectedCatKey(selectedCatKey === cat.key ? null : cat.key);
+                                }}
+                              />
+                            );
+                          });
+                        })()}
+                      </Svg>
+
+                      <TouchableOpacity
+                        activeOpacity={0.8}
+                        onPress={async () => {
+                          if (selectedCatKey !== null) {
+                            await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                            setSelectedCatKey(null);
+                          }
+                        }}
+                        style={s.donutCenterTextContainer}
+                      >
+                        {selectedCatKey === null ? (
+                          <>
+                            <Text style={s.centerLabel}>Total Spent</Text>
+                            <Text style={s.centerValue} numberOfLines={1} adjustsFontSizeToFit>
+                              ₹{fmt(totalSpent)}
+                            </Text>
+                            <Text style={s.centerSub}>{currentExps.length} items</Text>
+                          </>
+                        ) : (
+                          (() => {
+                            const selectedCat = catBreakdown.find((c) => c.key === selectedCatKey);
+                            if (!selectedCat) return null;
+                            const pctVal = Math.round((selectedCat.amount / totalSpent) * 100);
+                            return (
+                              <>
+                                <Text style={[s.centerLabel, { color: selectedCat.color }]}>
+                                  {selectedCat.label}
+                                </Text>
+                                <Text style={s.centerValue} numberOfLines={1} adjustsFontSizeToFit>
+                                  ₹{fmt(selectedCat.amount)}
+                                </Text>
+                                <Text style={s.centerSub}>{pctVal}% of total</Text>
+                              </>
+                            );
+                          })()
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
+                  <View style={s.legendWrap}>
+                    {catBreakdown.map((cat) => {
+                      const isSelected = selectedCatKey === cat.key;
+                      return (
+                        <TouchableOpacity
+                          key={cat.key}
+                          activeOpacity={0.7}
+                          style={[
+                            s.legendItem,
+                            isSelected && s.legendItemActive,
+                            selectedCatKey !== null && !isSelected && { opacity: 0.5 },
+                          ]}
+                          onPress={async () => {
+                            await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                            setSelectedCatKey(selectedCatKey === cat.key ? null : cat.key);
+                          }}
+                        >
+                          <View style={[s.legendDot, { backgroundColor: cat.color }]} />
+                          <Text style={s.legendText} numberOfLines={1}>
+                            {cat.label}
+                          </Text>
+                        </TouchableOpacity>
                       );
                     })}
                   </View>
-                  <View style={s.legendWrap}>
-                    {catBreakdown.slice(0, 4).map((cat) => (
-                      <View key={cat.key} style={s.legendItem}>
-                        <View style={[s.legendDot, { backgroundColor: cat.color }]} />
-                        <Text style={s.legendText} numberOfLines={1}>
-                          {cat.label}
-                        </Text>
-                      </View>
-                    ))}
-                  </View>
 
                   <View style={s.catList}>
-                    {catBreakdown.map((cat, idx) => {
+                    {catBreakdown.map((cat) => {
                       const pct = (cat.amount / totalSpent) * 100;
+                      const isSelected = selectedCatKey === cat.key;
+                      const isAnySelected = selectedCatKey !== null;
                       return (
-                        <View key={cat.key} style={idx > 0 ? s.catRowBorder : undefined}>
+                        <TouchableOpacity
+                          key={cat.key}
+                          activeOpacity={0.85}
+                          onPress={async () => {
+                            await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                            setSelectedCatKey(selectedCatKey === cat.key ? null : cat.key);
+                          }}
+                          style={[
+                            s.catRowContainer,
+                            isSelected && s.catRowSelected,
+                            isAnySelected && !isSelected && { opacity: 0.35 },
+                          ]}
+                        >
                           <View style={s.catRow}>
                             <View style={[s.catIcon, { backgroundColor: cat.bg }]}>
                               <Ionicons name={cat.icon as any} size={18} color={cat.color} />
@@ -334,7 +507,7 @@ export default function InsightsScreen() {
                               <Text style={s.catPct}>{Math.round(pct)}%</Text>
                             </View>
                           </View>
-                        </View>
+                        </TouchableOpacity>
                       );
                     })}
                   </View>
@@ -342,7 +515,7 @@ export default function InsightsScreen() {
               )}
             </View>
 
-            {/* Budget */}
+            {/* Budget Status */}
             {budgetEntries.length > 0 ? (
               <View style={s.card}>
                 <View style={s.cardHeaderRow}>
@@ -378,7 +551,7 @@ export default function InsightsScreen() {
                 onPress={() => router.push("/settings")}
                 activeOpacity={0.85}
               >
-                <Ionicons name="wallet-outline" size={22} color={GREEN} />
+                <Ionicons name="wallet-outline" size={22} color={colors.primary} />
                 <View style={{ flex: 1, marginLeft: 12 }}>
                   <Text style={s.ctaTitle}>Set category budgets</Text>
                   <Text style={s.ctaSub}>Track limits per category in Settings</Text>
@@ -390,6 +563,14 @@ export default function InsightsScreen() {
         )}
       </ScrollView>
     </View>
+  );
+}
+
+export default function InsightsScreenWithErrorBoundary() {
+  return (
+    <ErrorBoundary>
+      <InsightsScreen />
+    </ErrorBoundary>
   );
 }
 
@@ -442,12 +623,12 @@ function createStyles(colors: ReturnType<typeof useColors>, topPad: number, tabC
     statRow: {
       flexDirection: "row",
       gap: 8,
-      marginBottom: 12,
+      marginBottom: 14,
     },
     statCard: {
       flex: 1,
       backgroundColor: colors.card,
-      borderRadius: 18,
+      borderRadius: 20,
       padding: 12,
       alignItems: "center",
       borderWidth: 1,
@@ -473,7 +654,7 @@ function createStyles(colors: ReturnType<typeof useColors>, topPad: number, tabC
       textAlign: "center",
     },
     statValue: {
-      fontSize: 18,
+      fontSize: 17,
       fontFamily: "Inter_700Bold",
       color: colors.foreground,
       textAlign: "center",
@@ -484,19 +665,6 @@ function createStyles(colors: ReturnType<typeof useColors>, topPad: number, tabC
       fontFamily: "Inter_400Regular",
       color: colors.mutedForeground,
       marginTop: 4,
-      textAlign: "center",
-    },
-    salaryBanner: {
-      backgroundColor: colors.muted,
-      borderRadius: 12,
-      paddingVertical: 10,
-      paddingHorizontal: 14,
-      marginBottom: 14,
-    },
-    salaryBannerText: {
-      fontSize: 13,
-      fontFamily: "Inter_600SemiBold",
-      color: colors.primary,
       textAlign: "center",
     },
     card: {
@@ -526,39 +694,107 @@ function createStyles(colors: ReturnType<typeof useColors>, topPad: number, tabC
     cardHeaderRow: {
       flexDirection: "row",
       justifyContent: "space-between",
-      alignItems: "center",
+      alignItems: "flex-start",
       marginBottom: 4,
     },
     link: {
-      fontSize: 14,
+      fontSize: 13,
       fontFamily: "Inter_600SemiBold",
       color: colors.primary,
     },
-    splitBar: {
-      flexDirection: "row",
-      height: 14,
-      borderRadius: 7,
-      overflow: "hidden",
-      marginTop: 14,
-      backgroundColor: colors.muted,
+    // Donut Styles
+    donutContainer: {
+      alignItems: "center",
+      justifyContent: "center",
+      marginVertical: 18,
     },
-    splitSeg: { height: "100%", minWidth: 3 },
+    donutWrapper: {
+      width: 150,
+      height: 150,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    donutCenterTextContainer: {
+      position: "absolute",
+      width: 90,
+      height: 90,
+      borderRadius: 45,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.card,
+      shadowColor: isDark ? "transparent" : "#000",
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.06,
+      shadowRadius: 6,
+      elevation: 2,
+    },
+    centerLabel: {
+      fontSize: 9,
+      fontFamily: "Inter_600SemiBold",
+      color: colors.mutedForeground,
+      textTransform: "uppercase",
+      letterSpacing: 0.5,
+      textAlign: "center",
+    },
+    centerValue: {
+      fontSize: 17,
+      fontFamily: "Inter_700Bold",
+      color: colors.foreground,
+      marginVertical: 2,
+      textAlign: "center",
+      width: 80,
+    },
+    centerSub: {
+      fontSize: 9,
+      fontFamily: "Inter_500Medium",
+      color: colors.mutedForeground,
+      textAlign: "center",
+    },
+    // Legend Styles
     legendWrap: {
       flexDirection: "row",
       flexWrap: "wrap",
-      gap: 10,
-      marginTop: 10,
-      marginBottom: 4,
+      justifyContent: "center",
+      gap: 6,
+      marginTop: 6,
+      marginBottom: 14,
     },
-    legendItem: { flexDirection: "row", alignItems: "center", gap: 4 },
+    legendItem: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 5,
+      paddingHorizontal: 8,
+      paddingVertical: 5,
+      borderRadius: 12,
+      backgroundColor: isDark ? "rgba(255,255,255,0.02)" : "rgba(0,0,0,0.015)",
+      borderWidth: 1,
+      borderColor: isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.03)",
+    },
+    legendItemActive: {
+      backgroundColor: isDark ? "rgba(16,185,129,0.15)" : "#e6f7f0",
+      borderColor: colors.primary,
+    },
     legendDot: { width: 8, height: 8, borderRadius: 4 },
     legendText: {
       fontSize: 11,
       fontFamily: "Inter_500Medium",
-      color: colors.mutedForeground,
-      maxWidth: 72,
+      color: colors.foreground,
+      maxWidth: 80,
     },
-    catList: { marginTop: 8 },
+    // Cat list rows
+    catList: {
+      marginTop: 8,
+      gap: 4,
+    },
+    catRowContainer: {
+      paddingVertical: 8,
+      paddingHorizontal: 12,
+      borderRadius: 16,
+      backgroundColor: "transparent",
+    },
+    catRowSelected: {
+      backgroundColor: isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.02)",
+    },
     catRowBorder: {
       borderTopWidth: StyleSheet.hairlineWidth,
       borderTopColor: colors.border,
@@ -566,7 +802,6 @@ function createStyles(colors: ReturnType<typeof useColors>, topPad: number, tabC
     catRow: {
       flexDirection: "row",
       alignItems: "center",
-      paddingVertical: 12,
     },
     catIcon: {
       width: 40,
@@ -577,7 +812,7 @@ function createStyles(colors: ReturnType<typeof useColors>, topPad: number, tabC
     },
     catInfo: { flex: 1, marginLeft: 12 },
     catName: {
-      fontSize: 15,
+      fontSize: 14,
       fontFamily: "Inter_600SemiBold",
       color: colors.foreground,
       marginBottom: 6,
@@ -591,7 +826,7 @@ function createStyles(colors: ReturnType<typeof useColors>, topPad: number, tabC
     catBarFill: { height: 6, borderRadius: 3 },
     catRight: { alignItems: "flex-end", marginLeft: 8 },
     catAmt: {
-      fontSize: 15,
+      fontSize: 14,
       fontFamily: "Inter_700Bold",
     },
     catPct: {
@@ -603,7 +838,7 @@ function createStyles(colors: ReturnType<typeof useColors>, topPad: number, tabC
     chartLegend: {
       flexDirection: "row",
       alignItems: "center",
-      marginTop: 10,
+      marginTop: 14,
     },
     budgetRow: {
       flexDirection: "row",
@@ -685,6 +920,135 @@ function createStyles(colors: ReturnType<typeof useColors>, topPad: number, tabC
       color: "#fff",
       fontSize: 15,
       fontFamily: "Inter_600SemiBold",
+    },
+
+    // Health Card Styles
+    healthCard: {
+      backgroundColor: colors.card,
+      borderRadius: 24,
+      padding: 20,
+      marginBottom: 14,
+      borderWidth: 1,
+      borderColor: colors.border,
+      shadowColor: isDark ? "transparent" : "#000",
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.04,
+      shadowRadius: 10,
+      elevation: 3,
+    },
+    healthHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      marginBottom: 16,
+    },
+    healthIconBg: {
+      width: 42,
+      height: 42,
+      borderRadius: 14,
+      backgroundColor: isDark ? "rgba(16,185,129,0.12)" : "#ecfdf5",
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    healthTitleContainer: {
+      flex: 1,
+      marginLeft: 12,
+    },
+    healthTitle: {
+      fontSize: 16,
+      fontFamily: "Inter_700Bold",
+      color: colors.foreground,
+    },
+    healthSub: {
+      fontSize: 11,
+      fontFamily: "Inter_400Regular",
+      color: colors.mutedForeground,
+      marginTop: 2,
+    },
+    scoreBadge: {
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: isDark ? "#18261e" : "#e8f1ea",
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      borderRadius: 12,
+    },
+    scoreLabel: {
+      fontSize: 8,
+      fontFamily: "Inter_600SemiBold",
+      color: colors.mutedForeground,
+      textTransform: "uppercase",
+    },
+    scoreValue: {
+      fontSize: 15,
+      fontFamily: "Inter_700Bold",
+      color: colors.primary,
+      marginTop: 1,
+    },
+    healthDetailsRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      backgroundColor: isDark ? "rgba(255,255,255,0.02)" : "rgba(0,0,0,0.01)",
+      padding: 14,
+      borderRadius: 18,
+      borderWidth: 1,
+      borderColor: isDark ? "rgba(255,255,255,0.03)" : "rgba(0,0,0,0.02)",
+      marginBottom: 16,
+    },
+    healthProgressContainer: {
+      width: 70,
+      height: 70,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    healthProgressCenter: {
+      position: "absolute",
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    healthProgressText: {
+      fontSize: 13,
+      fontFamily: "Inter_700Bold",
+      color: colors.foreground,
+    },
+    healthStatusHeading: {
+      fontSize: 14,
+      fontFamily: "Inter_700Bold",
+      color: colors.foreground,
+      marginBottom: 4,
+    },
+    healthDescription: {
+      fontSize: 12,
+      fontFamily: "Inter_400Regular",
+      color: colors.mutedForeground,
+      lineHeight: 16,
+    },
+    burnRateContainer: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: colors.border,
+      paddingTop: 16,
+    },
+    burnRateItem: {
+      flex: 1,
+      alignItems: "center",
+    },
+    burnRateLabel: {
+      fontSize: 10,
+      fontFamily: "Inter_500Medium",
+      color: colors.mutedForeground,
+      marginBottom: 4,
+    },
+    burnRateValue: {
+      fontSize: 16,
+      fontFamily: "Inter_700Bold",
+      color: colors.foreground,
+    },
+    dividerVertical: {
+      width: StyleSheet.hairlineWidth,
+      height: 24,
+      backgroundColor: colors.border,
     },
   });
 }

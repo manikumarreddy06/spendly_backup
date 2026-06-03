@@ -43,6 +43,7 @@ function ProfileScreen() {
     expenses,
     splitGroups,
     clearAllData,
+    getSpentByCategory,
   } = useApp();
 
   const topPad = Platform.OS === "web" ? 67 : insets.top;
@@ -56,6 +57,7 @@ function ProfileScreen() {
 
   // Category Budgets States
   const [limits, setLimits] = useState<Record<string, string>>({});
+  const [budgetsExpanded, setBudgetsExpanded] = useState(false);
 
   // Ad Settings State
   const [adFreeMode, setAdFreeMode] = useState(false);
@@ -291,6 +293,8 @@ function ProfileScreen() {
   };
 
 
+
+
   const isDark = colors.background !== "#f4faf6";
   const gradientColors = isDark 
     ? ["#0b1610", "#080c09", "#080c09"] 
@@ -373,66 +377,74 @@ function ProfileScreen() {
           Set a monthly spending cap per category. Leave blank for no limit.
         </Text>
         <View style={s.card}>
-          {allCategories.map((cat, i) => (
-            <View key={cat.key} style={[s.budgetRow, i > 0 && s.budgetDivider]}>
-              <View style={[s.catIcon, { backgroundColor: cat.color + "18" }]}>
-                <Ionicons name={cat.icon as "home"} size={17} color={cat.color} />
-              </View>
-              <Text style={s.catLabel}>{cat.label}</Text>
-              <View style={s.limitInputWrap}>
-                <Text style={s.rupeeSmall}>₹</Text>
-                <TextInput
-                  testID={`input-budget-${cat.key}`}
-                  style={s.limitInput}
-                  value={limits[cat.key] ?? ""}
-                  onChangeText={(v) => setLimits((prev) => ({ ...prev, [cat.key]: v }))}
-                  placeholder="—"
-                  placeholderTextColor={colors.mutedForeground}
-                  keyboardType="numeric"
-                />
-              </View>
-            </View>
-          ))}
-
           <TouchableOpacity
-            testID="button-save-budgets"
-            onPress={handleSaveBudgets}
-            style={s.saveBtn}
-            activeOpacity={0.85}
+            activeOpacity={0.7}
+            onPress={async () => {
+              await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+              setBudgetsExpanded(!budgetsExpanded);
+            }}
+            style={[s.collapsibleHeader, { marginBottom: budgetsExpanded ? 16 : 0 }]}
           >
-            <Ionicons name="checkmark-circle-outline" size={18} color="#fff" style={{ marginRight: 6 }} />
-            <Text style={s.saveBtnText}>Save Budgets</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Custom Categories Section */}
-        <Text style={[s.sectionLabel, { marginTop: 24 }]}>🏷️ Custom Categories</Text>
-        <Text style={s.sectionHint}>
-          Manage categories tailored to your lifestyle.
-        </Text>
-        <View style={s.card}>
-          {customCategories.length === 0 ? (
-            <View style={s.emptyCustomCats}>
-              <Ionicons name="pricetag-outline" size={24} color={colors.mutedForeground} style={{ marginBottom: 6 }} />
-              <Text style={s.emptyCustomCatsText}>No custom categories yet</Text>
-              <Text style={s.emptyCustomCatsSub}>Create categories tailored to your lifestyle—like 'Gym' or 'Pet Care' in the Home screen.</Text>
+            <Ionicons name="wallet-outline" size={18} color={colors.primary} style={{ marginRight: 10 }} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.collapsibleTitle}>Configure Budgets ({allCategories.length})</Text>
+              <Text style={s.collapsibleSub}>
+                {budgetsExpanded ? "Set caps per category" : "Tap to expand configuration"}
+              </Text>
             </View>
-          ) : (
-            customCategories.map((cat, i) => (
-              <View key={cat.id} style={[s.customCatRow, i > 0 && s.budgetDivider]}>
-                <View style={[s.catIcon, { backgroundColor: cat.color + "18" }]}>
-                  <Ionicons name={cat.icon as "home"} size={17} color={cat.color} />
+            <Ionicons
+              name={budgetsExpanded ? "chevron-up" : "chevron-down"}
+              size={16}
+              color={colors.mutedForeground}
+            />
+          </TouchableOpacity>
+
+          {budgetsExpanded && (
+            <>
+              {allCategories.map((cat, i) => (
+                <View key={cat.key} style={[s.budgetRow, i > 0 && s.budgetDivider]}>
+                  <View style={[s.catIcon, { backgroundColor: cat.color + "18" }]}>
+                    <Ionicons name={cat.icon as "home"} size={17} color={cat.color} />
+                  </View>
+                  <View style={{ flex: 1, marginLeft: 12 }}>
+                    <Text style={s.catLabelText}>{cat.label}</Text>
+                    {(() => {
+                      const spentAmt = getSpentByCategory(cat.key);
+                      if (spentAmt > 0) {
+                        return (
+                          <Text style={s.catSpentLabel}>
+                            ₹{Math.round(spentAmt).toLocaleString("en-IN")} spent this month
+                          </Text>
+                        );
+                      }
+                      return null;
+                    })()}
+                  </View>
+                  <View style={s.limitInputWrap}>
+                    <Text style={s.rupeeSmall}>₹</Text>
+                    <TextInput
+                      testID={`input-budget-${cat.key}`}
+                      style={s.limitInput}
+                      value={limits[cat.key] ?? ""}
+                      onChangeText={(v) => setLimits((prev) => ({ ...prev, [cat.key]: v }))}
+                      placeholder="—"
+                      placeholderTextColor={colors.mutedForeground}
+                      keyboardType="numeric"
+                    />
+                  </View>
                 </View>
-                <Text style={s.catLabel}>{cat.name}</Text>
-                <TouchableOpacity
-                  onPress={() => handleDeleteCategory(cat.id, cat.name)}
-                  style={s.trashBtn}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons name="trash-outline" size={16} color={colors.destructive} />
-                </TouchableOpacity>
-              </View>
-            ))
+              ))}
+
+              <TouchableOpacity
+                testID="button-save-budgets"
+                onPress={handleSaveBudgets}
+                style={s.saveBtn}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="checkmark-circle-outline" size={18} color="#fff" style={{ marginRight: 6 }} />
+                <Text style={s.saveBtnText}>Save Budgets</Text>
+              </TouchableOpacity>
+            </>
           )}
         </View>
 
@@ -455,6 +467,27 @@ function ProfileScreen() {
               thumbColor={Platform.OS === "android" ? (adFreeMode ? colors.primary : "#f4f3f4") : undefined}
             />
           </View>
+
+
+          <View style={s.reminderDivider} />
+
+          <TouchableOpacity
+            testID="button-manage-recurring"
+            style={s.actionBtn}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+              router.push("/recurring-bills");
+            }}
+            activeOpacity={0.8}
+          >
+            <View style={[s.actionIcon, { backgroundColor: "#3b82f618" }]}>
+              <Ionicons name="calendar-outline" size={20} color="#3b82f6" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={s.actionTitle}>Recurring Bills & Subscriptions</Text>
+              <Text style={s.actionSub}>View and manage active monthly recurring expenses</Text>
+            </View>
+          </TouchableOpacity>
         </View>
 
         {/* Data Portability Section */}
@@ -662,6 +695,8 @@ const profileStyles = (
     saveBtnText: { color: "#fff", fontSize: 15, fontFamily: "Inter_600SemiBold" },
     catIcon: { width: 36, height: 36, borderRadius: 10, alignItems: "center", justifyContent: "center" },
     catLabel: { flex: 1, fontSize: 14, fontFamily: "Inter_500Medium", color: colors.foreground, marginLeft: 12 },
+    catLabelText: { fontSize: 14, fontFamily: "Inter_500Medium", color: colors.foreground },
+    catSpentLabel: { fontSize: 11, fontFamily: "Inter_400Regular", color: colors.mutedForeground, marginTop: 2 },
     budgetRow: {
       flexDirection: "row",
       alignItems: "center",
@@ -920,6 +955,22 @@ const profileStyles = (
       color: colors.foreground,
       fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
       fontSize: 12,
+    },
+    collapsibleHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingVertical: 4,
+    },
+    collapsibleTitle: {
+      fontSize: 14,
+      fontFamily: "Inter_700Bold",
+      color: colors.foreground,
+    },
+    collapsibleSub: {
+      fontSize: 11,
+      fontFamily: "Inter_400Regular",
+      color: colors.mutedForeground,
+      marginTop: 2,
     },
   });
 };

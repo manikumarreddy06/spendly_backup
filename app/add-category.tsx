@@ -72,7 +72,25 @@ function CategoryIcon({
 export default function AddCategoryScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { addCustomCategory, setBudgetLimit } = useApp();
+  const { addCustomCategory, setBudgetLimit, customCategories, deleteCustomCategory } = useApp();
+
+  const handleDeleteCategory = (id: string, name: string) => {
+    Alert.alert(
+      "Delete Category",
+      `Are you sure you want to delete "${name}"? Expenses in this category will default to "Others".`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+            await deleteCustomCategory(id);
+          },
+        },
+      ]
+    );
+  };
   const colors = useColors();
   const isDark = colors.background !== "#f4faf6";
 
@@ -90,7 +108,6 @@ export default function AddCategoryScreen() {
 
   const limitNum = parseInt(monthlyLimit.replace(/,/g, ""), 10);
   const hasLimit = !isNaN(limitNum) && limitNum > 0;
-  const previewName = name.trim() || "Your Category";
 
   const handleCreate = async () => {
     if (!name.trim()) {
@@ -239,20 +256,6 @@ export default function AddCategoryScreen() {
             <Ionicons name="wallet-outline" size={18} color={colors.mutedForeground} />
           </View>
 
-          <Text style={s.label}>Category Preview</Text>
-          <View style={s.previewBox}>
-            <View style={[s.previewIcon, { backgroundColor: selectedColor + "18" }]}>
-              <CategoryIcon name={selectedIcon} color={selectedColor} size={18} />
-            </View>
-            <View style={s.previewText}>
-              <Text style={s.previewTitle}>{previewName}</Text>
-              <Text style={s.previewSub}>₹0 spent this month</Text>
-            </View>
-            <View style={[s.previewBadge, { backgroundColor: selectedColor + "14" }]}>
-              <Text style={[s.previewBadgePct, { color: selectedColor }]}>0%</Text>
-              <Text style={[s.previewBadgeSub, { color: selectedColor }]}>of limit</Text>
-            </View>
-          </View>
 
           <TouchableOpacity
             testID="button-create-category"
@@ -271,6 +274,30 @@ export default function AddCategoryScreen() {
               <Ionicons name="sparkles" size={11} color="rgba(255,255,255,0.75)" />
             </LinearGradient>
           </TouchableOpacity>
+
+          {customCategories.length > 0 && (
+            <>
+              <View style={s.listDivider} />
+              <Text style={s.label}>Existing Custom Categories</Text>
+              <View style={s.customCatsList}>
+                {customCategories.map((cat, idx) => (
+                  <View key={cat.id} style={[s.customCatRow, idx > 0 && s.catRowBorder]}>
+                    <View style={[s.previewIcon, { backgroundColor: cat.color + "18" }]}>
+                      <CategoryIcon name={cat.icon} color={cat.color} size={18} />
+                    </View>
+                    <Text style={s.customCatName}>{cat.name}</Text>
+                    <TouchableOpacity
+                      onPress={() => handleDeleteCategory(cat.id, cat.name)}
+                      style={s.trashBtn}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons name="trash-outline" size={16} color={colors.destructive} />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            </>
+          )}
         </ScrollView>
       </KeyboardAvoidingView>
     </View>
@@ -555,6 +582,44 @@ function createStyles(colors: ReturnType<typeof useColors>, topPad: number, bott
       fontSize: 16,
       fontFamily: "Inter_700Bold",
       color: "#fff",
+    },
+    listDivider: {
+      height: 1,
+      backgroundColor: colors.border,
+      marginVertical: 24,
+    },
+    customCatsList: {
+      backgroundColor: colors.background,
+      borderRadius: 14,
+      borderWidth: 1.5,
+      borderColor: colors.border,
+      paddingHorizontal: 14,
+      marginBottom: 16,
+    },
+    customCatRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingVertical: 12,
+    },
+    catRowBorder: {
+      borderTopWidth: 1,
+      borderTopColor: colors.border,
+    },
+    customCatName: {
+      flex: 1,
+      fontSize: 14,
+      fontFamily: "Inter_500Medium",
+      color: colors.foreground,
+      marginLeft: 12,
+    },
+    trashBtn: {
+      width: 32,
+      height: 32,
+      borderRadius: 16,
+      backgroundColor: colors.destructive + "12",
+      alignItems: "center",
+      justifyContent: "center",
+      marginLeft: "auto",
     },
   });
 }

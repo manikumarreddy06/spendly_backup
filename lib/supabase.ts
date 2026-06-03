@@ -62,25 +62,46 @@ export async function deleteGroup(groupId: string): Promise<void> {
   }
 }
 
+export type SyncStatus = "connecting" | "connected" | "disconnected";
+
 export function subscribeToGroup(
   groupId: string,
-  onUpdate: (group: SplitGroup) => void
+  onUpdate: (group: SplitGroup) => void,
+  onStatusChange?: (status: SyncStatus) => void
 ): () => void {
   let isUnsubscribed = false;
   let channel: RealtimeChannel | null = null;
   let reconnectTimeout: any = null;
   let reconnectDelay = 2000; // start with 2s
+  let consecutiveFailures = 0;
+
+  const scheduleReconnect = () => {
+    if (isUnsubscribed) return;
+    clearTimeout(reconnectTimeout);
+    onStatusChange?.("disconnected");
+    reconnectTimeout = setTimeout(() => {
+      reconnectDelay = Math.min(reconnectDelay * 2, 30000); // cap at 30s
+      consecutiveFailures++;
+      console.log(`[supabase] Reconnecting group-${groupId} (attempt ${consecutiveFailures})...`);
+      startSubscription();
+    }, reconnectDelay);
+  };
 
   const startSubscription = () => {
     if (isUnsubscribed) return;
     const client = getClient();
-    if (!client) return;
+    if (!client) {
+      scheduleReconnect();
+      return;
+    }
 
     const existing = activeChannels.get(groupId);
     if (existing) {
       existing.unsubscribe();
       activeChannels.delete(groupId);
     }
+
+    onStatusChange?.("connecting");
 
     try {
       channel = client.channel(`group-${groupId}`);
@@ -103,20 +124,16 @@ export function subscribeToGroup(
         )
         .subscribe((status, err) => {
           if (status === "SUBSCRIBED") {
-            reconnectDelay = 2000; // reset delay on success
+            reconnectDelay = 2000; // reset backoff on success
+            consecutiveFailures = 0;
+            onStatusChange?.("connected");
             console.log(`[supabase] Subscribed to group-${groupId}`);
-          } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
             console.warn(`[supabase] Realtime channel status "${status}" for group-${groupId}:`, err);
             if (!isUnsubscribed) {
               channel?.unsubscribe();
               activeChannels.delete(groupId);
-
-              clearTimeout(reconnectTimeout);
-              reconnectTimeout = setTimeout(() => {
-                console.log(`[supabase] Reconnecting group-${groupId}...`);
-                reconnectDelay = Math.min(reconnectDelay * 2, 30000); // cap at 30s
-                startSubscription();
-              }, reconnectDelay);
+              scheduleReconnect();
             }
           }
         });
@@ -124,6 +141,9 @@ export function subscribeToGroup(
       activeChannels.set(groupId, channel);
     } catch (e) {
       console.warn("[supabase] subscribeToGroup subscription setup failed:", e);
+      if (!isUnsubscribed) {
+        scheduleReconnect();
+      }
     }
   };
 
@@ -132,6 +152,7 @@ export function subscribeToGroup(
   return () => {
     isUnsubscribed = true;
     clearTimeout(reconnectTimeout);
+    onStatusChange?.("disconnected");
     if (channel) {
       channel.unsubscribe();
       activeChannels.delete(groupId);

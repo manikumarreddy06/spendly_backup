@@ -5,8 +5,56 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
+import {
+  AppState,
+  type AppStateStatus,
+  Modal,
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  Animated,
+  Alert,
+  Platform,
+  Pressable,
+} from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
+import { useColors } from "@/hooks/useColors";
+
+// Global alert handler delegate for React Native Alert.alert interception
+let globalAlertHandler: (
+  title: string,
+  message?: string,
+  buttons?: any[]
+) => void = () => {};
+
+if (Alert) {
+  const originalAlert = Alert.alert;
+  Alert.alert = (title, message, buttons, options) => {
+    if (globalAlertHandler) {
+      globalAlertHandler(title, message, buttons);
+    } else {
+      originalAlert(title, message, buttons, options);
+    }
+  };
+}
+
+interface CustomAlertButton {
+  text: string;
+  style?: "default" | "cancel" | "destructive";
+  onPress?: () => void | Promise<void>;
+}
+
+interface CustomAlertConfig {
+  title: string;
+  message?: string;
+  buttons?: CustomAlertButton[];
+  cancelable?: boolean;
+}
 import {
   isExpenseSettledFor,
   isSameMember,
@@ -20,6 +68,7 @@ import {
   deleteGroup as deleteGroupRemote,
   subscribeToGroup,
   unsubscribeAll,
+  type SyncStatus,
 } from "@/lib/supabase";
 import { SUPABASE_ENABLED } from "@/lib/config";
 
@@ -168,6 +217,13 @@ interface AppContextType {
   clearLastDeleted: () => void;
   restoreBackup: (jsonStr: string) => Promise<void>;
   clearAllData: () => Promise<void>;
+  syncStatus: Record<string, SyncStatus>;
+  showAlert: (
+    title: string,
+    message?: string,
+    buttons?: CustomAlertButton[],
+    options?: { cancelable?: boolean }
+  ) => void;
 }
 
 // POLISH 1: Export currency helper
@@ -190,6 +246,135 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const [lastDeleted, setLastDeleted] = useState<LastDeletedItem | null>(null);
   const undoTimerRef = React.useRef<any>(null);
+  const [syncStatus, setSyncStatus] = useState<Record<string, SyncStatus>>({});
+
+  const [alertConfig, setAlertConfig] = useState<CustomAlertConfig | null>(null);
+  const alertAnim = useRef(new Animated.Value(0)).current;
+
+  const showAlert = useCallback(
+    (
+      title: string,
+      message?: string,
+      buttons?: CustomAlertButton[],
+      options?: { cancelable?: boolean }
+    ) => {
+      setAlertConfig({
+        title,
+        message,
+        buttons,
+        cancelable: options?.cancelable ?? true,
+      });
+    },
+    []
+  );
+
+  useEffect(() => {
+    globalAlertHandler = (title, message, buttons) => {
+      setAlertConfig({
+        title,
+        message,
+        buttons,
+        cancelable: true,
+      });
+    };
+    return () => {
+      globalAlertHandler = () => {};
+    };
+  }, []);
+
+  const resolveIcon = (title: string, message?: string) => {
+    const text = `${title} ${message || ""}`.toLowerCase();
+    if (
+      text.includes("delete") ||
+      text.includes("clear") ||
+      text.includes("remove") ||
+      text.includes("stop") ||
+      text.includes("warning") ||
+      text.includes("error") ||
+      text.includes("critical")
+    ) {
+      return {
+        name: "warning" as const,
+        color: "#ef4444",
+        bg: "rgba(239, 68, 68, 0.12)",
+        haptic: Haptics.NotificationFeedbackType.Warning,
+      };
+    }
+    if (
+      text.includes("success") ||
+      text.includes("saved") ||
+      text.includes("completed") ||
+      text.includes("done") ||
+      text.includes("restored") ||
+      text.includes("backup")
+    ) {
+      return {
+        name: "checkmark-circle" as const,
+        color: "#10b981",
+        bg: "rgba(16, 185, 129, 0.12)",
+        haptic: Haptics.NotificationFeedbackType.Success,
+      };
+    }
+    return {
+      name: "information-circle" as const,
+      color: "#3b82f6",
+      bg: "rgba(59, 130, 246, 0.12)",
+      haptic: null,
+    };
+  };
+
+  useEffect(() => {
+    if (alertConfig) {
+      const meta = resolveIcon(alertConfig.title, alertConfig.message);
+      if (meta.haptic) {
+        Haptics.notificationAsync(meta.haptic).catch(() => {});
+      } else {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+      }
+
+      alertAnim.setValue(0);
+      Animated.spring(alertAnim, {
+        toValue: 1,
+        useNativeDriver: true,
+        damping: 15,
+        stiffness: 150,
+      }).start();
+    }
+  }, [alertConfig]);
+
+  const handleButtonPress = async (btn: CustomAlertButton) => {
+    setAlertConfig(null);
+    if (btn.onPress) {
+      try {
+        await btn.onPress();
+      } catch (err) {
+        console.warn("Error running custom alert button onPress:", err);
+      }
+    }
+  };
+
+  const colors = useColors();
+  const alertStyles = useMemo(() => createAlertStyles(colors), [colors]);
+
+  const resolvedButtons = alertConfig?.buttons && alertConfig.buttons.length > 0
+    ? alertConfig.buttons
+    : [{ text: "OK", onPress: () => {} }];
+
+  const isRowLayout =
+    resolvedButtons.length === 2 &&
+    (resolvedButtons[0].text || "").length < 12 &&
+    (resolvedButtons[1].text || "").length < 12;
+
+  const alertIconMeta = alertConfig ? resolveIcon(alertConfig.title, alertConfig.message) : null;
+  const alertOpacity = alertAnim;
+  const alertScale = alertAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.93, 1],
+  });
+  const alertTranslateY = alertAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [30, 0],
+  });
 
   const clearLastDeleted = useCallback(() => {
     if (undoTimerRef.current) {
@@ -695,7 +880,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const updated = prev.map((g) => {
           if (g.id !== groupId) return g;
           const mergedExpensesMap = new Map<string, SplitExpense>();
-          [...g.expenses, ...remote.expenses].forEach((e) => {
+          [...remote.expenses, ...g.expenses].forEach((e) => {
             const existing = mergedExpensesMap.get(e.id);
             if (existing) {
               const mergedSettled = [...new Set([...existing.settled, ...e.settled])];
@@ -707,8 +892,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           const merged = Array.from(mergedExpensesMap.values()).sort(
             (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
           );
-          const combinedMembers = [...new Set([...g.members, ...remote.members])];
-          return { ...g, expenses: merged, members: combinedMembers };
+          const combinedMembers = [...new Set([...remote.members, ...g.members])];
+          return { ...g, ...remote, expenses: merged, members: combinedMembers };
         });
         AsyncStorage.setItem("split_groups", JSON.stringify(updated));
         return updated;
@@ -719,6 +904,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // ── Real-time group subscriptions ────────────────────────────────────
   const unsubscribesRef = React.useRef<Map<string, () => void>>(new Map());
   const groupUpdateCallbacksRef = React.useRef<Map<string, (group: SplitGroup) => void>>(new Map());
+
+  // Reconnect subscriptions when app returns from background
+  const [reconnectKey, setReconnectKey] = useState(0);
+
+  // AppState listener to trigger reconnection
+  useEffect(() => {
+    const handleAppStateChange = (nextState: AppStateStatus) => {
+      if (nextState === "active" && SUPABASE_ENABLED) {
+        setReconnectKey((k) => k + 1);
+      }
+    };
+    const sub = AppState.addEventListener("change", handleAppStateChange);
+    return () => sub.remove();
+  }, []);
 
   useEffect(() => {
     if (!SUPABASE_ENABLED) return;
@@ -733,11 +932,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             if (g.id !== group.id) return g;
             // Merge remote expenses and members
             const mergedExpensesMap = new Map<string, SplitExpense>();
-            [...g.expenses, ...remoteGroup.expenses].forEach((e) => {
+            // Process remote first so it takes precedence on conflict (last-write-wins)
+            [...remoteGroup.expenses, ...g.expenses].forEach((e) => {
               const existing = mergedExpensesMap.get(e.id);
               if (existing) {
                 const mergedSettled = [...new Set([...existing.settled, ...e.settled])];
-                mergedExpensesMap.set(e.id, { ...existing, settled: mergedSettled });
+                mergedExpensesMap.set(e.id, { ...e, ...existing, settled: mergedSettled });
               } else {
                 mergedExpensesMap.set(e.id, e);
               }
@@ -745,8 +945,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             const merged = Array.from(mergedExpensesMap.values()).sort(
               (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
             );
-            const combinedMembers = [...new Set([...g.members, ...remoteGroup.members])];
-            return { ...g, expenses: merged, members: combinedMembers };
+            const combinedMembers = [...new Set([...remoteGroup.members, ...g.members])];
+            return { ...g, ...remoteGroup, expenses: merged, members: combinedMembers };
           });
           AsyncStorage.setItem("split_groups", JSON.stringify(updated));
           return updated;
@@ -774,11 +974,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const unsub = subscribeToGroup(group.id, (remoteGroup: SplitGroup) => {
         const cb = groupUpdateCallbacksRef.current.get(group.id);
         if (cb) cb(remoteGroup);
+      }, (status: SyncStatus) => {
+        setSyncStatus((prev) => {
+          if (prev[group.id] === status) return prev;
+          return { ...prev, [group.id]: status };
+        });
       });
 
       unsubscribesRef.current.set(group.id, unsub);
     });
-  }, [splitGroups]);
+  }, [splitGroups, reconnectKey]);
 
   // Clean up all subscriptions on unmount
   useEffect(() => {
@@ -991,11 +1196,228 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         clearLastDeleted,
         restoreBackup,
         clearAllData,
+        syncStatus,
+        showAlert,
       }}
     >
       {children}
+      {alertConfig && (
+        <Modal
+          visible={alertConfig !== null}
+          transparent
+          animationType="fade"
+          onRequestClose={() => {
+            if (alertConfig.cancelable !== false) {
+              setAlertConfig(null);
+            }
+          }}
+        >
+          <View style={alertStyles.alertOverlay}>
+            <Pressable
+              style={StyleSheet.absoluteFill}
+              onPress={() => {
+                if (alertConfig.cancelable !== false) {
+                  setAlertConfig(null);
+                }
+              }}
+            />
+            <Animated.View
+              style={[
+                alertStyles.alertCard,
+                {
+                  opacity: alertOpacity,
+                  transform: [
+                    { scale: alertScale },
+                    { translateY: alertTranslateY }
+                  ]
+                }
+              ]}
+            >
+              {alertIconMeta && (
+                <View style={[alertStyles.alertIconBg, { backgroundColor: alertIconMeta.bg }]}>
+                  <Ionicons name={alertIconMeta.name} size={28} color={alertIconMeta.color} />
+                </View>
+              )}
+              <Text style={alertStyles.alertTitle}>{alertConfig.title}</Text>
+              {alertConfig.message ? (
+                <Text style={alertStyles.alertMessage}>{alertConfig.message}</Text>
+              ) : null}
+
+              {isRowLayout ? (
+                <View style={alertStyles.buttonRow}>
+                  {resolvedButtons.map((btn, idx) => {
+                    const isDestructive = btn.style === "destructive";
+                    const isCancel = btn.style === "cancel";
+                    return (
+                      <TouchableOpacity
+                        key={idx}
+                        style={[
+                          alertStyles.btnBase,
+                          alertStyles.buttonRowCell,
+                          isDestructive
+                            ? alertStyles.btnDestructive
+                            : isCancel
+                            ? alertStyles.btnCancel
+                            : alertStyles.btnDefault,
+                        ]}
+                        onPress={() => handleButtonPress(btn)}
+                        activeOpacity={0.8}
+                      >
+                        <Text
+                          style={[
+                            alertStyles.btnTextBase,
+                            isDestructive
+                              ? alertStyles.btnTextDestructive
+                              : isCancel
+                              ? alertStyles.btnTextCancel
+                              : alertStyles.btnTextDefault,
+                          ]}
+                        >
+                          {btn.text}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              ) : (
+                <View style={alertStyles.buttonStack}>
+                  {resolvedButtons.map((btn, idx) => {
+                    const isDestructive = btn.style === "destructive";
+                    const isCancel = btn.style === "cancel";
+                    return (
+                      <TouchableOpacity
+                        key={idx}
+                        style={[
+                          alertStyles.btnBase,
+                          isDestructive
+                            ? alertStyles.btnDestructive
+                            : isCancel
+                            ? alertStyles.btnCancel
+                            : alertStyles.btnDefault,
+                          { width: "100%" }
+                        ]}
+                        onPress={() => handleButtonPress(btn)}
+                        activeOpacity={0.8}
+                      >
+                        <Text
+                          style={[
+                            alertStyles.btnTextBase,
+                            isDestructive
+                              ? alertStyles.btnTextDestructive
+                              : isCancel
+                              ? alertStyles.btnTextCancel
+                              : alertStyles.btnTextDefault,
+                          ]}
+                        >
+                          {btn.text}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              )}
+            </Animated.View>
+          </View>
+        </Modal>
+      )}
     </AppContext.Provider>
   );
+}
+
+function createAlertStyles(colors: ReturnType<typeof useColors>) {
+  const isDark = colors.background !== "#f4faf6";
+  return StyleSheet.create({
+    alertOverlay: {
+      flex: 1,
+      backgroundColor: isDark ? "rgba(0, 0, 0, 0.65)" : "rgba(0, 0, 0, 0.45)",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 24,
+    },
+    alertCard: {
+      width: "100%",
+      maxWidth: 320,
+      backgroundColor: colors.card,
+      borderRadius: 24,
+      borderWidth: 1,
+      borderColor: colors.border,
+      padding: 22,
+      alignItems: "center",
+      shadowColor: "#000",
+      shadowOffset: { width: 0, height: 10 },
+      shadowOpacity: isDark ? 0.35 : 0.08,
+      shadowRadius: 16,
+      elevation: 10,
+    },
+    alertIconBg: {
+      width: 52,
+      height: 52,
+      borderRadius: 26,
+      alignItems: "center",
+      justifyContent: "center",
+      marginBottom: 16,
+    },
+    alertTitle: {
+      fontSize: 17,
+      fontFamily: "Inter_700Bold",
+      color: colors.foreground,
+      textAlign: "center",
+      marginBottom: 8,
+      lineHeight: 22,
+    },
+    alertMessage: {
+      fontSize: 13,
+      fontFamily: "Inter_400Regular",
+      color: colors.mutedForeground,
+      textAlign: "center",
+      lineHeight: 18,
+      marginBottom: 20,
+    },
+    buttonRow: {
+      flexDirection: "row",
+      gap: 10,
+      width: "100%",
+    },
+    buttonRowCell: {
+      flex: 1,
+    },
+    buttonStack: {
+      flexDirection: "column",
+      gap: 10,
+      width: "100%",
+    },
+    btnBase: {
+      height: 44,
+      borderRadius: 12,
+      alignItems: "center",
+      justifyContent: "center",
+      paddingHorizontal: 12,
+    },
+    btnDefault: {
+      backgroundColor: colors.primary,
+    },
+    btnDestructive: {
+      backgroundColor: colors.destructive,
+    },
+    btnCancel: {
+      backgroundColor: "transparent",
+      borderWidth: 1.5,
+      borderColor: colors.border,
+    },
+    btnTextBase: {
+      fontSize: 13,
+      fontFamily: "Inter_600SemiBold",
+    },
+    btnTextDefault: {
+      color: "#ffffff",
+    },
+    btnTextDestructive: {
+      color: "#ffffff",
+    },
+    btnTextCancel: {
+      color: colors.foreground,
+    },
+  });
 }
 
 export function useApp() {

@@ -1,7 +1,8 @@
-import React from "react";
-import { StyleSheet, Text, View } from "react-native";
+import React, { useState } from "react";
+import { StyleSheet, Text, View, TouchableOpacity } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import Svg, { Circle } from "react-native-svg";
+import * as Haptics from "expo-haptics";
 
 function CircularProgress({ pct, size = 88 }: { pct: number; size?: number }) {
   const r = (size - 12) / 2;
@@ -53,6 +54,17 @@ function fmt(n: number): string {
 
 export const BalanceCard = React.forwardRef<View, BalanceCardProps>(
   ({ totalBalance, budgetLimit, spent, spentPct, spentPctRaw, isDark, primaryColor, primaryDarkColor }, ref) => {
+    const [displayMode, setDisplayMode] = useState<"pct" | "spent" | "remaining">("pct");
+
+    const handlePress = async () => {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      setDisplayMode((prev) => {
+        if (prev === "pct") return "spent";
+        if (prev === "spent") return "remaining";
+        return "pct";
+      });
+    };
+
     return (
       <View ref={ref} collapsable={false}>
         <LinearGradient
@@ -84,20 +96,52 @@ export const BalanceCard = React.forwardRef<View, BalanceCardProps>(
                 </View>
               )}
             </View>
-            <View style={s.ringBox}>
+            <TouchableOpacity
+              activeOpacity={0.85}
+              onPress={handlePress}
+              style={s.ringBox}
+            >
               <CircularProgress pct={spentPct} size={88} />
               <View style={s.ringCenter}>
-                <Text style={s.ringPct}>{spentPctRaw}%</Text>
-                <Text
-                  style={s.ringLimit}
-                  numberOfLines={2}
-                  adjustsFontSizeToFit
-                  minimumFontScale={0.75}
-                >
-                  {budgetLimit > 0 ? `of ₹${fmt(budgetLimit)} limit` : "set salary in settings"}
-                </Text>
+                {displayMode === "pct" && (
+                  <>
+                    <Text style={s.ringPct}>{spentPctRaw}%</Text>
+                    <Text
+                      style={s.ringLimit}
+                      numberOfLines={2}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.75}
+                    >
+                      {budgetLimit > 0 ? `of ₹${fmt(budgetLimit)} limit` : "set salary in settings"}
+                    </Text>
+                  </>
+                )}
+                {displayMode === "spent" && (
+                  <>
+                    <Text style={[s.ringPct, { fontSize: 13 }]}>₹{fmt(spent)}</Text>
+                    <Text
+                      style={s.ringLimit}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                    >
+                      spent
+                    </Text>
+                  </>
+                )}
+                {displayMode === "remaining" && (
+                  <>
+                    <Text style={[s.ringPct, { fontSize: 12 }]}>₹{fmt(Math.max(budgetLimit - spent, 0))}</Text>
+                    <Text
+                      style={s.ringLimit}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                    >
+                      remaining
+                    </Text>
+                  </>
+                )}
               </View>
-            </View>
+            </TouchableOpacity>
           </View>
         </LinearGradient>
       </View>

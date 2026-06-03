@@ -295,8 +295,8 @@ function createStyles(colors: ReturnType<typeof useColors>) {
     unsupportedWarning: {
       flexDirection: "row",
       gap: 8,
-      backgroundColor: "#fff7ed",
-      borderColor: "#ffedd5",
+      backgroundColor: colors.background === "#f4faf6" ? "#fff7ed" : "rgba(234,88,12,0.12)",
+      borderColor: colors.background === "#f4faf6" ? "#ffedd5" : "rgba(234,88,12,0.25)",
       borderWidth: 1,
       padding: 12,
       borderRadius: 10,
@@ -306,7 +306,7 @@ function createStyles(colors: ReturnType<typeof useColors>) {
       flex: 1,
       fontSize: 11,
       fontFamily: "Inter_400Regular",
-      color: "#c2410c",
+      color: colors.background === "#f4faf6" ? "#c2410c" : "#f97316",
       lineHeight: 15,
     },
     reminderToggleRow: {
