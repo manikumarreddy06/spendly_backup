@@ -11,6 +11,11 @@ type SplitGroupsRow = {
   updated_at: string;
 };
 
+function toRemoteGroupData(group: SplitGroup): Omit<SplitGroup, "accessCode"> {
+  const { accessCode: _accessCode, ...safeGroup } = group;
+  return safeGroup;
+}
+
 function getClient() {
   if (!SUPABASE_ENABLED || !SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
   if (!supabase) {
@@ -25,9 +30,27 @@ export async function upsertGroup(group: SplitGroup): Promise<void> {
   const client = getClient();
   if (!client) return;
   try {
+    if (group.accessCode) {
+      const { error } = await (client as any).rpc("upsert_split_group", {
+        p_id: group.id,
+        p_data: toRemoteGroupData(group),
+        p_write_token: group.accessCode,
+      });
+      if (!error) return;
+      console.warn("[supabase] secure upsert unavailable, falling back to legacy upsert:", error);
+    }
+
+    const { error: tokenColumnError } = await (client as any).from("split_groups").upsert({
+      id: group.id,
+      data: toRemoteGroupData(group),
+      write_token: group.accessCode,
+      updated_at: new Date().toISOString(),
+    });
+    if (!tokenColumnError) return;
+
     await (client as any).from("split_groups").upsert({
       id: group.id,
-      data: group,
+      data: toRemoteGroupData(group),
       updated_at: new Date().toISOString(),
     });
   } catch (e) {
@@ -35,10 +58,21 @@ export async function upsertGroup(group: SplitGroup): Promise<void> {
   }
 }
 
-export async function fetchGroup(groupId: string): Promise<SplitGroup | null> {
+export async function fetchGroup(groupId: string, accessCode?: string): Promise<SplitGroup | null> {
   const client = getClient();
   if (!client) return null;
   try {
+    if (accessCode) {
+      const { data: rpcData, error: rpcError } = await (client as any).rpc("fetch_split_group", {
+        p_id: groupId,
+        p_access_token: accessCode,
+      });
+      if (!rpcError && rpcData) return rpcData as SplitGroup;
+      if (rpcError) {
+        console.warn("[supabase] secure fetch unavailable, falling back to legacy fetch:", rpcError);
+      }
+    }
+
     const { data, error } = await (client as any)
       .from("split_groups")
       .select("data")
@@ -52,10 +86,18 @@ export async function fetchGroup(groupId: string): Promise<SplitGroup | null> {
   }
 }
 
-export async function deleteGroup(groupId: string): Promise<void> {
+export async function deleteGroup(groupId: string, accessCode?: string): Promise<void> {
   const client = getClient();
   if (!client) return;
   try {
+    if (accessCode) {
+      const { error } = await (client as any).rpc("delete_split_group", {
+        p_id: groupId,
+        p_write_token: accessCode,
+      });
+      if (!error) return;
+    }
+
     await (client as any).from("split_groups").delete().eq("id", groupId);
   } catch (e) {
     console.warn("[supabase] deleteGroup failed:", e);

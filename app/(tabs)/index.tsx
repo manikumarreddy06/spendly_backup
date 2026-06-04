@@ -3,6 +3,7 @@ import DateTimePicker, { DateTimePickerAndroid } from "@react-native-community/d
 import * as Haptics from "expo-haptics";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
+import { useIsFocused } from "@react-navigation/native";
 import React, { useMemo, useRef, useState, useCallback, useEffect } from "react";
 import {
   Alert,
@@ -205,6 +206,7 @@ function HomeScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const isFocused = useIsFocused();
   const {
     profile,
     expenses,
@@ -287,7 +289,7 @@ function HomeScreen() {
     return () => {
       isMounted = false;
     };
-  }, [reminderModalVisible]);
+  }, [reminderModalVisible, isFocused]);
 
   useEffect(() => {
     let animation: Animated.CompositeAnimation | null = null;
@@ -527,12 +529,16 @@ function HomeScreen() {
                 <View ref={notifRef} collapsable={false}>
                   <TouchableOpacity
                     testID="button-reminders"
-                    style={s.settingsBtn}
+                    style={[s.settingsBtn, remindersEnabled && { backgroundColor: colors.primary + "12" }]}
                     onPress={() => setReminderModalVisible(true)}
                     activeOpacity={0.8}
                   >
                     <Animated.View style={{ transform: [{ rotate: bellRotate }] }}>
-                      <Ionicons name="notifications-outline" size={20} color={colors.mutedForeground} />
+                      <Ionicons 
+                        name={remindersEnabled ? "notifications" : "notifications-outline"} 
+                        size={20} 
+                        color={remindersEnabled ? colors.primary : colors.mutedForeground} 
+                      />
                     </Animated.View>
                     {!remindersEnabled && <View style={s.bellRedDot} />}
                   </TouchableOpacity>
@@ -693,7 +699,7 @@ function HomeScreen() {
             <Text style={s.sectionTitle}>Recent Activity</Text>
             <TouchableOpacity
               testID="button-view-history"
-              onPress={() => router.push("/(tabs)/history")}
+              onPress={() => router.navigate("/(tabs)/history")}
               activeOpacity={0.7}
             >
               <Text style={s.sectionLink}>See All</Text>
@@ -721,7 +727,13 @@ function HomeScreen() {
                   key={act.id}
                   style={[s.activityRow, idx > 0 && s.activityRowBorder]}
                   activeOpacity={0.75}
-                  onPress={() => router.push(act.route as any)}
+                  onPress={() => {
+                    if (act.route.startsWith("/(tabs)")) {
+                      router.navigate(act.route as any);
+                    } else {
+                      router.push(act.route as any);
+                    }
+                  }}
                 >
                   <View style={[s.activityIcon, { backgroundColor: act.bg }]}>
                     <Ionicons name={act.icon as any} size={18} color={act.color} />

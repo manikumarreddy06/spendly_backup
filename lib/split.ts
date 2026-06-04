@@ -53,6 +53,16 @@ export function getExpenseMemberShare(
     return (pct / 100) * expense.totalAmount;
   }
 
+  if (expense.splitMode === "shares" && expense.customShares) {
+    const totalShares = Object.values(expense.customShares).reduce((s, v) => s + v, 0);
+    if (totalShares <= 0) return 0;
+    const entry = Object.entries(expense.customShares).find(([k]) =>
+      isSameMember(k, m, members)
+    );
+    const shares = entry ? entry[1] : 0;
+    return (shares / totalShares) * expense.totalAmount;
+  }
+
   const count = expense.splitAmong.length;
   if (count === 0) return 0;
   return expense.totalAmount / count;
@@ -81,6 +91,16 @@ export function getExpenseMemberConsumptionShare(
     );
     const pct = entry ? entry[1] : 0;
     return (pct / 100) * expense.totalAmount;
+  }
+
+  if (expense.splitMode === "shares" && expense.customShares) {
+    const totalShares = Object.values(expense.customShares).reduce((s, v) => s + v, 0);
+    if (totalShares <= 0) return 0;
+    const entry = Object.entries(expense.customShares).find(([k]) =>
+      isSameMember(k, m, members)
+    );
+    const shares = entry ? entry[1] : 0;
+    return (shares / totalShares) * expense.totalAmount;
   }
 
   const count = expense.splitAmong.length;

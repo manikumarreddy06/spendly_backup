@@ -24,7 +24,14 @@ import {
   RefreshControl,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useApp, SplitGroup, parseGroupName, formatGroupName } from "@/context/AppContext";
+import {
+  useApp,
+  SplitGroup,
+  parseGroupName,
+  formatGroupName,
+  getGroupInviteCode,
+  parseGroupInviteCode,
+} from "@/context/AppContext";
 import { useColors } from "@/hooks/useColors";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { SUPABASE_ENABLED } from "@/lib/config";
@@ -86,10 +93,9 @@ function SplitScreen() {
         try {
           const text = await Clipboard.getString();
           if (text) {
-            const uuidRegex = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/;
-            const match = text.match(uuidRegex);
-            if (match) {
-              setClipboardCode(match[0]);
+            const parsed = parseGroupInviteCode(text);
+            if (parsed) {
+              setClipboardCode(getGroupInviteCode(parsed));
             } else {
               setClipboardCode(null);
             }
@@ -347,9 +353,10 @@ function SplitScreen() {
 
   const handleShareInvite = async (g: SplitGroup) => {
     const { name } = parseGroupName(g.name);
+    const inviteCode = getGroupInviteCode(g);
     const lines = [
       `Join my Split group "${name}" on Spendly!`,
-      `Invite Code: ${g.id}`,
+      `Invite Code: ${inviteCode}`,
       "",
       "(Copy the Invite Code above, open Spendly Split, and tap 'Join')",
     ];
@@ -358,7 +365,8 @@ function SplitScreen() {
 
   const handleWhatsAppShare = async (g: SplitGroup) => {
     const { name } = parseGroupName(g.name);
-    const text = `Join my Split group "${name}" on Spendly!\nInvite Code: ${g.id}`;
+    const inviteCode = getGroupInviteCode(g);
+    const text = `Join my Split group "${name}" on Spendly!\nInvite Code: ${inviteCode}`;
     const url = `whatsapp://send?text=${encodeURIComponent(text)}`;
     Linking.openURL(url).catch(() => {
       Alert.alert("Error", "WhatsApp is not installed on this device.");
@@ -372,20 +380,16 @@ function SplitScreen() {
       return;
     }
 
-    // Try to extract a UUID if they pasted a full invite message or extra text
-    const uuidRegex = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/;
-    const match = code.match(uuidRegex);
-    if (match) {
-      code = match[0];
-    } else {
+    const parsedCode = parseGroupInviteCode(code);
+    if (!parsedCode) {
       Alert.alert("Invalid Code", "Please enter a valid group invite code.");
       return;
     }
 
-    if (splitGroups.some((g) => g.id === code)) {
+    if (splitGroups.some((g) => g.id === parsedCode.id)) {
       setJoinModalVisible(false);
       setInviteCodeInput("");
-      router.push(`/split/${code}`);
+      router.push(`/split/${parsedCode.id}`);
       return;
     }
 
@@ -397,7 +401,7 @@ function SplitScreen() {
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         setJoinModalVisible(false);
         setInviteCodeInput("");
-        router.push(`/split/${code}`);
+        router.push(`/split/${successGroup.id}`);
       } else {
         Alert.alert("Not Found", "Could not find a split group with this invite code. Please verify the code.");
       }
@@ -919,7 +923,7 @@ function SplitScreen() {
 
           <View style={s.successCodeBox}>
             <Text style={s.successCodeLabel}>GROUP JOIN CODE</Text>
-            <Text style={s.successCodeText}>{createdGroup?.id}</Text>
+            <Text style={s.successCodeText}>{createdGroup ? getGroupInviteCode(createdGroup) : ""}</Text>
           </View>
 
           <View style={{ gap: 10, marginTop: 12 }}>
@@ -946,7 +950,7 @@ function SplitScreen() {
             <TouchableOpacity
               onPress={() => {
                 if (createdGroup) {
-                  Clipboard.setString(createdGroup.id);
+                  Clipboard.setString(getGroupInviteCode(createdGroup));
                   Alert.alert("Copied", "Code copied to clipboard!");
                 }
               }}
@@ -996,18 +1000,10 @@ function SplitScreen() {
             <TextInput
               testID="input-group-invite-code"
               style={s.input}
-              placeholder="Paste invite code (UUID format)"
+              placeholder="Paste invite code"
               placeholderTextColor={colors.mutedForeground}
               value={inviteCodeInput}
-              onChangeText={(text) => {
-                const uuidRegex = /([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/;
-                const match = text.match(uuidRegex);
-                if (match) {
-                  setInviteCodeInput(match[1]);
-                } else {
-                  setInviteCodeInput(text);
-                }
-              }}
+              onChangeText={setInviteCodeInput}
               onFocus={() => setInviteCodeFocus(true)}
               onBlur={() => setInviteCodeFocus(false)}
               autoCapitalize="none"

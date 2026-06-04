@@ -168,7 +168,7 @@ function InsightsScreen() {
             </Text>
             <TouchableOpacity
               style={s.primaryBtn}
-              onPress={() => router.push("/(tabs)")}
+              onPress={() => router.push("/quick-log")}
             >
               <Text style={s.primaryBtnText}>Add expense</Text>
             </TouchableOpacity>

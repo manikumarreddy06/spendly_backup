@@ -38,7 +38,6 @@ function ProfileTabButton({
   onPress?: (e: any) => void;
   accessibilityState?: { selected?: boolean };
 }) {
-  const router = useRouter();
   const colors = useColors();
   const { profile } = useApp();
   const letter = (profile?.name || "U")[0].toUpperCase();
@@ -46,7 +45,7 @@ function ProfileTabButton({
 
   return (
     <Pressable
-      onPress={() => router.push("/profile")}
+      onPress={onPress}
       style={tabStyles.tabBtn}
       android_ripple={{ borderless: true, radius: 28 }}
     >
@@ -90,6 +89,7 @@ export default function TabLayout() {
   return (
     <View style={{ flex: 1 }}>
       <Tabs
+        backBehavior="initialRoute"
         screenOptions={{
           tabBarActiveTintColor: colors.primary,
           tabBarInactiveTintColor: colors.mutedForeground,

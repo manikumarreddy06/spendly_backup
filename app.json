@@ -2,7 +2,7 @@
   "expo": {
     "name": "Spendly",
     "slug": "spendly-mobile",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/spendly_s_logo.png",
     "scheme": "spendly-mobile",
@@ -19,7 +19,7 @@
     },
     "android": {
       "package": "com.spendlyapp.personal",
-      "versionCode": 1,
+      "versionCode": 2,
       "jsEngine": "hermes",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/spendly_s_logo.png",
@@ -60,6 +60,15 @@
     "react-native-google-mobile-ads": {
       "android_app_id": "ca-app-pub-3859841618293423~8371426177",
       "androidAppId": "ca-app-pub-3859841618293423~8371426177"
+    },
+    "extra": {
+      "supabaseEnabled": true,
+      "supabaseUrl": "https://mvdrbonnmzfukgsmwcde.supabase.co",
+      "supabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im12ZHJib25ubXpmdWtnc213Y2RlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwMDM3ODMsImV4cCI6MjA5NDU3OTc4M30.eS_y33rSrdr990kv7aDHehDxThRt_Lufx4uLcLIPamA",
+      "adsEnabled": true,
+      "forceTestAds": false,
+      "admobBannerAdUnitId": "ca-app-pub-3859841618293423/2886464501",
+      "admobInterstitialAdUnitId": "ca-app-pub-3859841618293423/8356877995"
     },
     "experiments": {
       "typedRoutes": true,

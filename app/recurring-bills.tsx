@@ -73,7 +73,7 @@ function RecurringBillsScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   
-  const { expenses, editExpense, deleteExpense, customCategories } = useApp();
+  const { expenses, editExpense, deleteRecurringExpenseSeries, customCategories } = useApp();
 
   // Load parent recurring items
   const recurringItems = useMemo(() => {
@@ -118,16 +118,16 @@ function RecurringBillsScreen() {
           onPress: async () => {
             Alert.alert(
               "Confirm Deletion",
-              "Are you sure you want to permanently delete this recurring expense? This will also remove the original logged transaction.",
+              "Are you sure you want to permanently delete this recurring expense? This will remove the original transaction and all generated monthly history.",
               [
                 { text: "Cancel", style: "cancel" },
                 {
-                  text: "Delete Template",
+                  text: "Delete All",
                   style: "destructive",
                   onPress: async () => {
                     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
                     try {
-                      await deleteExpense(item.id);
+                      await deleteRecurringExpenseSeries(item.id);
                     } catch (err) {
                       Alert.alert("Error", "Could not delete expense.");
                     }

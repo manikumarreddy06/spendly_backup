@@ -77,6 +77,7 @@ export default function AddExpense() {
   const [amtFocused, setAmtFocused] = useState(false);
   const [descFocused, setDescFocused] = useState(false);
   const [success, setSuccess] = useState(false);
+  const isSavingRef = useRef(false);
 
   const scale = useSharedValue(1);
   const checkScale = useSharedValue(0);
@@ -91,36 +92,45 @@ export default function AddExpense() {
   const bottomPad = Platform.OS === "web" ? 34 : insets.bottom;
 
   const handleSubmit = async () => {
+    if (isSavingRef.current) return;
+
     const resolvedAmt = evaluateMathExpression(amount);
-    const amt = resolvedAmt !== null ? resolvedAmt : parseFloat(amount);
+    const amt = resolvedAmt !== null ? Math.round(resolvedAmt * 100) / 100 : parseFloat(amount);
     if (!amount || isNaN(amt) || amt <= 0) {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       amountRef.current?.focus();
       return;
     }
+
+    isSavingRef.current = true;
     scale.value = withSequence(
       withSpring(0.95, { damping: 15 }),
       withSpring(1, { damping: 10 })
     );
 
-    await addExpense({
-      category: cat,
-      amount: amt,
-      description: description.trim() || meta.label,
-      date: date.toISOString(),
-      recurring: isRecurring ? "monthly" : null,
-    });
-    await setLastExpenseCategory(cat);
+    try {
+      await addExpense({
+        category: cat,
+        amount: Math.round(amt * 100) / 100,
+        description: description.trim() || meta.label,
+        date: date.toISOString(),
+        recurring: isRecurring ? "monthly" : null,
+      });
+      await setLastExpenseCategory(cat);
 
-    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    checkScale.value = withSpring(1, { damping: 12 });
-    setSuccess(true);
-    setTimeout(() => {
-      router.replace("/(tabs)");
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      checkScale.value = withSpring(1, { damping: 12 });
+      setSuccess(true);
       setTimeout(() => {
-        adsManager.showAdIfReady();
-      }, 100);
-    }, 1200);
+        router.replace("/(tabs)");
+        setTimeout(() => {
+          adsManager.showAdIfReady();
+        }, 100);
+      }, 1200);
+    } catch (e) {
+      isSavingRef.current = false;
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    }
   };
 
   const s = addStyles(colors, topPad, bottomPad);

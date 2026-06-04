@@ -187,8 +187,11 @@ CREATE INDEX IF NOT EXISTS idx_user_settings_updated_at ON user_settings(updated
 CREATE TABLE IF NOT EXISTS public.split_groups (
   id TEXT PRIMARY KEY,
   data JSONB NOT NULL DEFAULT '{}'::jsonb,
+  write_token TEXT,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE public.split_groups ADD COLUMN IF NOT EXISTS write_token TEXT;
 
 -- Enable Row Level Security (RLS)
 ALTER TABLE public.split_groups ENABLE ROW LEVEL SECURITY;
@@ -197,22 +200,122 @@ ALTER TABLE public.split_groups ENABLE ROW LEVEL SECURITY;
 -- Run this in your Supabase project query editor to make sure realtime updates work!
 ALTER PUBLICATION supabase_realtime ADD TABLE public.split_groups;
 
--- Policies for public/anon access (no auth, UUID-based group access)
+-- Public read is intentionally kept for Realtime and legacy invite-code compatibility.
+-- Mutations are blocked directly and must go through token-checked RPC functions below.
 DROP POLICY IF EXISTS "Allow anon select on split_groups" ON public.split_groups;
 CREATE POLICY "Allow anon select on split_groups" ON public.split_groups
   FOR SELECT TO anon USING (true);
 
 DROP POLICY IF EXISTS "Allow anon insert on split_groups" ON public.split_groups;
 CREATE POLICY "Allow anon insert on split_groups" ON public.split_groups
-  FOR INSERT TO anon WITH CHECK (true);
+  FOR INSERT TO anon WITH CHECK (false);
 
 DROP POLICY IF EXISTS "Allow anon update on split_groups" ON public.split_groups;
 CREATE POLICY "Allow anon update on split_groups" ON public.split_groups
-  FOR UPDATE TO anon USING (true) WITH CHECK (true);
+  FOR UPDATE TO anon USING (false) WITH CHECK (false);
 
 DROP POLICY IF EXISTS "Allow anon delete on split_groups" ON public.split_groups;
 CREATE POLICY "Allow anon delete on split_groups" ON public.split_groups
-  FOR DELETE TO anon USING (true);
+  FOR DELETE TO anon USING (false);
+
+CREATE OR REPLACE FUNCTION public.upsert_split_group(
+  p_id TEXT,
+  p_data JSONB,
+  p_write_token TEXT
+)
+RETURNS public.split_groups
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  existing public.split_groups;
+  saved public.split_groups;
+BEGIN
+  IF p_id IS NULL OR p_id = '' THEN
+    RAISE EXCEPTION 'Missing split group id';
+  END IF;
+
+  IF p_write_token IS NULL OR length(p_write_token) < 32 THEN
+    RAISE EXCEPTION 'Missing split group write token';
+  END IF;
+
+  SELECT * INTO existing
+  FROM public.split_groups
+  WHERE id = p_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    INSERT INTO public.split_groups (id, data, write_token, updated_at)
+    VALUES (p_id, p_data, p_write_token, NOW())
+    RETURNING * INTO saved;
+    RETURN saved;
+  END IF;
+
+  IF existing.write_token IS NOT NULL AND existing.write_token <> p_write_token THEN
+    RAISE EXCEPTION 'Invalid split group write token';
+  END IF;
+
+  UPDATE public.split_groups
+  SET data = p_data,
+      write_token = COALESCE(existing.write_token, p_write_token),
+      updated_at = NOW()
+  WHERE id = p_id
+  RETURNING * INTO saved;
+
+  RETURN saved;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.fetch_split_group(
+  p_id TEXT,
+  p_access_token TEXT DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  saved public.split_groups;
+BEGIN
+  SELECT * INTO saved
+  FROM public.split_groups
+  WHERE id = p_id;
+
+  IF NOT FOUND THEN
+    RETURN NULL;
+  END IF;
+
+  -- Legacy UUID-only groups have no token. New tokenized groups may be read by
+  -- ID for Realtime compatibility, but updates/deletes still require the token.
+  RETURN saved.data;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.delete_split_group(
+  p_id TEXT,
+  p_write_token TEXT
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF p_write_token IS NULL OR length(p_write_token) < 32 THEN
+    RAISE EXCEPTION 'Missing split group write token';
+  END IF;
+
+  DELETE FROM public.split_groups
+  WHERE id = p_id
+    AND write_token = p_write_token;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.upsert_split_group(TEXT, JSONB, TEXT) TO anon;
+GRANT EXECUTE ON FUNCTION public.fetch_split_group(TEXT, TEXT) TO anon;
+GRANT EXECUTE ON FUNCTION public.delete_split_group(TEXT, TEXT) TO anon;
 
 CREATE INDEX IF NOT EXISTS idx_split_groups_updated_at ON split_groups(updated_at);
-
+CREATE INDEX IF NOT EXISTS idx_split_groups_write_token ON split_groups(write_token);

@@ -26,21 +26,23 @@ import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
 
 // Global alert handler delegate for React Native Alert.alert interception
-let globalAlertHandler: (
+let globalAlertHandler: ((
   title: string,
   message?: string,
-  buttons?: any[]
-) => void = () => {};
+  buttons?: any[],
+  options?: { cancelable?: boolean }
+) => void) | null = null;
 
-if (Alert) {
-  const originalAlert = Alert.alert;
+if (Alert && !(Alert as any).__spendlyCustomAlertPatched) {
+  const originalAlert = Alert.alert.bind(Alert);
   Alert.alert = (title, message, buttons, options) => {
     if (globalAlertHandler) {
-      globalAlertHandler(title, message, buttons);
+      globalAlertHandler(title, message, buttons, options);
     } else {
       originalAlert(title, message, buttons, options);
     }
   };
+  (Alert as any).__spendlyCustomAlertPatched = true;
 }
 
 interface CustomAlertButton {
@@ -55,6 +57,7 @@ interface CustomAlertConfig {
   buttons?: CustomAlertButton[];
   cancelable?: boolean;
 }
+
 import {
   isExpenseSettledFor,
   isSameMember,
@@ -72,6 +75,14 @@ import {
 } from "@/lib/supabase";
 import { SUPABASE_ENABLED } from "@/lib/config";
 
+// Import modular domain state hooks
+import { useProfileState } from "./state/useProfileState";
+import { useExpenseState } from "./state/useExpenseState";
+import { useSplitState } from "./state/useSplitState";
+export { parseGroupInviteCode } from "./state/useSplitState";
+import { useBudgetState } from "./state/useBudgetState";
+import { useCategoryState } from "./state/useCategoryState";
+
 export type ExpenseCategory =
   | "travel"
   | "food"
@@ -80,7 +91,7 @@ export type ExpenseCategory =
   | "healthcare"
   | "others";
 
-export type SplitMode = "equal" | "percentage" | "custom";
+export type SplitMode = "equal" | "percentage" | "custom" | "shares";
 
 export type BudgetLimits = Partial<Record<string, number>>;
 
@@ -114,11 +125,11 @@ export interface SplitExpense {
   totalAmount: number;
   paidBy: string;
   splitAmong: string[];
-  /** Map of member -> amount they owe (for percentage/custom splits) */
+  /** Map of member -> amount/weight they owe */
   customShares?: Record<string, number>;
   settled: string[];
   date: string;
-  /** "equal" | "percentage" | "custom" */
+  /** "equal" | "percentage" | "custom" | "shares" */
   splitMode: SplitMode;
   category?: string;
 }
@@ -130,10 +141,10 @@ export interface SplitGroup {
   expenses: SplitExpense[];
   createdAt: string;
   createdBy?: string;
+  accessCode?: string;
 }
 
 function genId(): string {
-  // Upgraded UUID v4 generator with time-based seed and high random entropy to guarantee collision prevention
   let d = Date.now();
   if (typeof performance !== 'undefined' && typeof performance.now === 'function'){
     d += performance.now();
@@ -153,7 +164,7 @@ export interface GroupVisuals {
 }
 
 export function parseGroupName(rawName: string): GroupVisuals {
-  if (!rawName) return { name: "", emoji: "👥", coverColor: "#2d7a52" };
+  if (!rawName?.trim()) return { name: "", emoji: "👥", coverColor: "#2d7a52" };
   const emojiMatch = rawName.match(/\[emoji::(.*?)\]/);
   const colorMatch = rawName.match(/\[color::(.*?)\]/);
   const emoji = emojiMatch ? emojiMatch[1] : "👥";
@@ -169,6 +180,10 @@ export function formatGroupName(name: string, emoji: string, coverColor: string)
   return `[emoji::${emoji}][color::${coverColor}]${name}`;
 }
 
+export function getGroupInviteCode(group: Pick<SplitGroup, "id" | "accessCode">): string {
+  return group.accessCode ? `${group.id}:${group.accessCode}` : group.id;
+}
+
 // ─── Context types ──────────────────────────────────────────────────────────
 
 export type LastDeletedItem =
@@ -178,12 +193,13 @@ export type LastDeletedItem =
 interface AppContextType {
   loaded: boolean;
   profile: UserProfile | null;
-  setProfile: (p: UserProfile) => Promise<void>;
+  setProfile: (p: UserProfile | null) => Promise<void>;
   expenses: Expense[];
   allExpenses: Expense[];
   addExpense: (data: Omit<Expense, "id" | "createdAt">) => Promise<void>;
   editExpense: (id: string, data: Partial<Omit<Expense, "id" | "createdAt">>) => Promise<void>;
   deleteExpense: (id: string) => Promise<void>;
+  deleteRecurringExpenseSeries: (id: string) => Promise<void>;
   splitGroups: SplitGroup[];
   createSplitGroup: (name: string, members: string[]) => Promise<SplitGroup>;
   deleteSplitGroup: (id: string) => Promise<void>;
@@ -210,7 +226,7 @@ interface AppContextType {
   addCustomCategory: (name: string, color: string, icon: string) => Promise<string>;
   deleteCustomCategory: (id: string) => Promise<void>;
   getOweSummary: () => { totalOwed: number; totalOwe: number };
-  joinGroupFromInvite: (groupId: string) => Promise<SplitGroup | null>;
+  joinGroupFromInvite: (inviteCode: string) => Promise<SplitGroup | null>;
   refreshGroup: (groupId: string) => Promise<void>;
   lastDeleted: LastDeletedItem | null;
   undoDelete: () => Promise<void>;
@@ -237,17 +253,7 @@ const AppContext = createContext<AppContextType>({} as AppContextType);
 // ─── Provider ───────────────────────────────────────────────────────────────
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
-  const [loaded, setLoaded] = useState(false);
-  const [profile, setProfileState] = useState<UserProfile | null>(null);
-  const [expenses, setExpenses] = useState<Expense[]>([]);
-  const [splitGroups, setSplitGroups] = useState<SplitGroup[]>([]);
-  const [budgetLimits, setBudgetLimitsState] = useState<BudgetLimits>({});
-  const [customCategories, setCustomCategoriesState] = useState<CustomCategory[]>([]);
-
-  const [lastDeleted, setLastDeleted] = useState<LastDeletedItem | null>(null);
-  const undoTimerRef = React.useRef<any>(null);
-  const [syncStatus, setSyncStatus] = useState<Record<string, SyncStatus>>({});
-
+  // Alert overlay state management
   const [alertConfig, setAlertConfig] = useState<CustomAlertConfig | null>(null);
   const alertAnim = useRef(new Animated.Value(0)).current;
 
@@ -269,16 +275,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
 
   useEffect(() => {
-    globalAlertHandler = (title, message, buttons) => {
+    globalAlertHandler = (title, message, buttons, options) => {
       setAlertConfig({
         title,
         message,
         buttons,
-        cancelable: true,
+        cancelable: options?.cancelable ?? true,
       });
     };
     return () => {
-      globalAlertHandler = () => {};
+      globalAlertHandler = null;
     };
   }, []);
 
@@ -376,6 +382,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     outputRange: [30, 0],
   });
 
+  // Undo delete operations
+  const [lastDeleted, setLastDeleted] = useState<LastDeletedItem | null>(null);
+  const undoTimerRef = useRef<any>(null);
+
   const clearLastDeleted = useCallback(() => {
     if (undoTimerRef.current) {
       clearTimeout(undoTimerRef.current);
@@ -396,276 +406,37 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // ── Load on mount ────────────────────────────────────────────────────────
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const [p, e, g, b, c] = await Promise.all([
-          AsyncStorage.getItem("user_profile"),
-          AsyncStorage.getItem("expenses"),
-          AsyncStorage.getItem("split_groups"),
-          AsyncStorage.getItem("budget_limits"),
-          AsyncStorage.getItem("custom_categories"),
-        ]);
+  // ── Modular Sub-domain State Hooks ──
+  const {
+    profile,
+    setProfile,
+    loaded: profileLoaded,
+  } = useProfileState();
 
-        if (p) setProfileState(JSON.parse(p));
-        if (g) setSplitGroups(JSON.parse(g));
-        if (b) setBudgetLimitsState(JSON.parse(b));
-        if (c) setCustomCategoriesState(JSON.parse(c));
+  const {
+    customCategories,
+    setCustomCategoriesState,
+    addCustomCategory,
+    deleteCustomCategory,
+    loaded: categoryLoaded,
+  } = useCategoryState();
 
-        let parsedExpenses: Expense[] = e ? JSON.parse(e) : [];
-        let modified = false;
+  const {
+    budgetLimits,
+    setBudgetLimitsState,
+    setBudgetLimit,
+    loaded: budgetLoaded,
+  } = useBudgetState();
 
-        // ── Auto-generate Recurring Expenses ──
-        const parents = parsedExpenses.filter(
-          (exp) => exp.recurring === "monthly" && !exp.recurringGroupId
-        );
-        const now = new Date();
-        const currentYear = now.getFullYear();
-        const currentMonth = now.getMonth();
-
-        // Pre-index existing child occurrences for O(1) lookups & track the latest child date per parent
-        const childKeys = new Set<string>();
-        const latestChildDates = new Map<string, Date>();
-
-        parsedExpenses.forEach((exp) => {
-          if (exp.recurringGroupId) {
-            const d = new Date(exp.date);
-            childKeys.add(`${exp.recurringGroupId}-${d.getFullYear()}-${d.getMonth()}`);
-            
-            const existingMax = latestChildDates.get(exp.recurringGroupId);
-            if (!existingMax || d.getTime() > existingMax.getTime()) {
-              latestChildDates.set(exp.recurringGroupId, d);
-            }
-          }
-        });
-
-        parents.forEach((parent) => {
-          const parentDate = new Date(parent.date);
-          const latestChildDate = latestChildDates.get(parent.id);
-          
-          // Start checkDate from one month after the latest child, or one month after the parent if no children exist
-          const startDate = latestChildDate ? latestChildDate : parentDate;
-          let checkDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 1);
-
-          while (
-            checkDate.getFullYear() < currentYear ||
-            (checkDate.getFullYear() === currentYear && checkDate.getMonth() <= currentMonth)
-          ) {
-            const checkY = checkDate.getFullYear();
-            const checkM = checkDate.getMonth();
-
-            const key = `${parent.id}-${checkY}-${checkM}`;
-            const childExists = childKeys.has(key);
-
-            if (!childExists) {
-              const parentDay = parentDate.getDate();
-              const daysInMonth = new Date(checkY, checkM + 1, 0).getDate();
-              const day = Math.min(parentDay, daysInMonth);
-              const generatedDate = new Date(
-                checkY,
-                checkM,
-                day,
-                parentDate.getHours(),
-                parentDate.getMinutes(),
-                parentDate.getSeconds()
-              );
-
-              const newChild: Expense = {
-                id: genId(),
-                category: parent.category,
-                amount: parent.amount,
-                description: parent.description,
-                date: generatedDate.toISOString(),
-                createdAt: new Date().toISOString(),
-                recurring: "monthly",
-                recurringGroupId: parent.id,
-              };
-
-              parsedExpenses.push(newChild);
-              childKeys.add(key);
-              modified = true;
-            }
-
-            checkDate = new Date(checkY, checkM + 1, 1);
-          }
-        });
-
-        if (modified) {
-          await AsyncStorage.setItem("expenses", JSON.stringify(parsedExpenses));
-        }
-
-        setExpenses(parsedExpenses);
-      } catch (err) {
-        console.warn("Error loading AppContext details:", err);
-      } finally {
-        setLoaded(true);
-      }
-    };
-    load();
-  }, []);
-
-  // ── Profile ───────────────────────────────────────────────────────────────
-  const setProfile = useCallback(async (p: UserProfile) => {
-    setProfileState(p);
-    await AsyncStorage.setItem("user_profile", JSON.stringify(p));
-  }, []);
-
-  // ── Expenses ──────────────────────────────────────────────────────────────
-  const addExpense = useCallback(
-    async (data: Omit<Expense, "id" | "createdAt">) => {
-      const newExpense: Expense = {
-        ...data,
-        id: genId(),
-        createdAt: new Date().toISOString(),
-      };
-
-      setExpenses((prev) => {
-        const updated = [newExpense, ...prev];
-        AsyncStorage.setItem("expenses", JSON.stringify(updated));
-        return updated;
-      });
-    },
-    []
-  );
-
-  const editExpense = useCallback(
-    async (id: string, data: Partial<Omit<Expense, "id" | "createdAt">>) => {
-      setExpenses((prev) => {
-        const updated = prev.map((e) => (e.id === id ? { ...e, ...data } : e));
-        AsyncStorage.setItem("expenses", JSON.stringify(updated));
-        return updated;
-      });
-    },
-    []
-  );
-
-  const deleteExpense = useCallback(async (id: string) => {
-    const item = expenses.find((e) => e.id === id);
-    if (item) {
-      setLastDeletedItem({ type: "expense", data: item });
-    }
-    setExpenses((prev) => {
-      const updated = prev.filter((e) => e.id !== id);
-      AsyncStorage.setItem("expenses", JSON.stringify(updated));
-      return updated;
-    });
-  }, [expenses, setLastDeletedItem]);
-
-  // ── Split Groups ──────────────────────────────────────────────────────────
-  const createSplitGroup = useCallback(async (name: string, members: string[]): Promise<SplitGroup> => {
-    const newGroup: SplitGroup = {
-      id: genId(),
-      name,
-      members,
-      expenses: [],
-      createdAt: new Date().toISOString(),
-    };
-
-    setSplitGroups((prev) => {
-      const updated = [newGroup, ...prev];
-      AsyncStorage.setItem("split_groups", JSON.stringify(updated));
-      return updated;
-    });
-
-    if (SUPABASE_ENABLED) {
-      upsertGroup(newGroup).catch(() => {});
-    }
-
-    return newGroup;
-  }, []);
-
-  const deleteSplitGroup = useCallback(async (id: string) => {
-    setSplitGroups((prev) => {
-      const updated = prev.filter((g) => g.id !== id);
-      AsyncStorage.setItem("split_groups", JSON.stringify(updated));
-      return updated;
-    });
-    if (SUPABASE_ENABLED) {
-      deleteGroupRemote(id).catch(() => {});
-    }
-  }, []);
-
-  const syncGroupToRemote = useCallback((group: SplitGroup) => {
-    if (SUPABASE_ENABLED) {
-      upsertGroup(group).catch(() => {});
-    }
-  }, []);
-
-  const addSplitExpense = useCallback(
-    async (groupId: string, data: Omit<SplitExpense, "id" | "settled">) => {
-      // CRITICAL 3: Validate shares sum to totalAmount
-      if (data.splitMode === "custom" && data.customShares) {
-        const sum = Object.values(data.customShares).reduce((a, b) => a + b, 0);
-        if (Math.abs(sum - data.totalAmount) > 1) {
-          throw new Error(`Custom shares (${sum}) do not add up to total amount (${data.totalAmount})`);
-        }
-      }
-      if (data.splitMode === "percentage" && data.customShares) {
-        const sum = Object.values(data.customShares).reduce((a, b) => a + b, 0);
-        if (Math.abs(sum - 100) > 0.5) {
-          throw new Error(`Percentages must add up to 100. Got ${sum}`);
-        }
-      }
-
-      const newExp: SplitExpense = { ...data, id: genId(), settled: [] };
-      setSplitGroups((prev) => {
-        const updated = prev.map((g) =>
-          g.id === groupId
-            ? { ...g, expenses: [newExp, ...g.expenses] }
-            : g
-        );
-        AsyncStorage.setItem("split_groups", JSON.stringify(updated));
-        // Sync the modified group to Supabase
-        const syncedGroup = updated.find((g) => g.id === groupId);
-        if (syncedGroup) syncGroupToRemote(syncedGroup);
-        return updated;
-      });
-    },
-    [syncGroupToRemote]
-  );
-
-  const deleteSplitExpense = useCallback(async (groupId: string, expenseId: string) => {
-    const group = splitGroups.find((g) => g.id === groupId);
-    if (group) {
-      const item = group.expenses.find((e) => e.id === expenseId);
-      if (item) {
-        setLastDeletedItem({ type: "split", groupId, data: item });
-      }
-    }
-    setSplitGroups((prev) => {
-      const updated = prev.map((g) =>
-        g.id === groupId
-          ? { ...g, expenses: g.expenses.filter((e) => e.id !== expenseId) }
-          : g
-      );
-      AsyncStorage.setItem("split_groups", JSON.stringify(updated));
-      const syncedGroup = updated.find((g) => g.id === groupId);
-      if (syncedGroup) syncGroupToRemote(syncedGroup);
-      return updated;
-    });
-  }, [splitGroups, setLastDeletedItem, syncGroupToRemote]);
-
-  const settleUp = useCallback(async (groupId: string, expenseId: string, member: string) => {
-    setSplitGroups((prev) => {
-      const updated = prev.map((g) => {
-        if (g.id !== groupId) return g;
-        const canon = resolveMemberInGroup(member, g.members) ?? member.trim();
-        const expenses = g.expenses.map((e) => {
-          if (e.id !== expenseId) return e;
-          const settled = e.settled.some((s) => isSameMember(s, canon, g.members))
-            ? e.settled
-            : [...e.settled, canon];
-          return { ...e, settled };
-        });
-        return { ...g, expenses };
-      });
-      AsyncStorage.setItem("split_groups", JSON.stringify(updated));
-      const syncedGroup = updated.find((g) => g.id === groupId);
-      if (syncedGroup) syncGroupToRemote(syncedGroup);
-      return updated;
-    });
-  }, [syncGroupToRemote]);
+  const {
+    expenses,
+    setExpenses,
+    addExpense,
+    editExpense,
+    deleteExpense,
+    deleteRecurringExpenseSeries,
+    loaded: expenseLoaded,
+  } = useExpenseState(setLastDeletedItem);
 
   const getBalances = useCallback((group: SplitGroup) => {
     const balances: Record<string, number> = {};
@@ -687,10 +458,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         balances[payer] = Math.round(((balances[payer] ?? 0) + amount) * 100) / 100;
       };
 
-      if ((expense.splitMode === "custom" || expense.splitMode === "percentage") && expense.customShares) {
+      if ((expense.splitMode === "custom" || expense.splitMode === "percentage" || expense.splitMode === "shares") && expense.customShares) {
+        const totalShares = expense.splitMode === "shares"
+          ? Object.values(expense.customShares).reduce((sum, v) => sum + Number(v), 0)
+          : 0;
+
         Object.entries(expense.customShares).forEach(([member, value]) => {
           const amount = expense.splitMode === "percentage"
             ? (Number(value) / 100) * expense.totalAmount
+            : expense.splitMode === "shares"
+            ? totalShares > 0 ? (Number(value) / totalShares) * expense.totalAmount : 0
             : Number(value);
           applyShare(member, amount);
         });
@@ -705,126 +482,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return balances;
   }, []);
 
-  const getSimplifiedBalances = useCallback((group: SplitGroup) => {
-    const raw = getBalances(group);
-    const creditors: { name: string; amount: number }[] = [];
-    const debtors: { name: string; amount: number }[] = [];
+  const {
+    splitGroups,
+    setSplitGroups,
+    syncStatus,
+    createSplitGroup,
+    deleteSplitGroup,
+    addSplitExpense,
+    deleteSplitExpense,
+    settleUp,
+    settleAllDebtsBetween,
+    addGroupMember,
+    removeGroupMember,
+    refreshGroup,
+    joinGroupFromInvite,
+    loaded: splitLoaded,
+  } = useSplitState(setLastDeletedItem, getBalances, profile?.name);
 
-    group.members.forEach((m) => {
-      const balance = raw[m] ?? 0;
-      if (balance > 0.01) creditors.push({ name: m, amount: balance });
-      if (balance < -0.01) debtors.push({ name: m, amount: Math.abs(balance) });
-    });
+  // Overall ready status computed from sub-states
+  const loaded = profileLoaded && expenseLoaded && splitLoaded && budgetLoaded && categoryLoaded;
 
-    creditors.sort((a, b) => b.amount - a.amount);
-    debtors.sort((a, b) => b.amount - a.amount);
-
-    const result: Array<{ from: string; to: string; amount: number }> = [];
-    let ci = 0;
-    let di = 0;
-    while (ci < creditors.length && di < debtors.length) {
-      const amount = Math.min(creditors[ci].amount, debtors[di].amount);
-      if (amount > 0.01) {
-        result.push({
-          from: debtors[di].name,
-          to: creditors[ci].name,
-          amount: Math.round(amount * 100) / 100,
-        });
-      }
-      creditors[ci].amount -= amount;
-      debtors[di].amount -= amount;
-      if (creditors[ci].amount <= 0.01) ci += 1;
-      if (debtors[di].amount <= 0.01) di += 1;
-    }
-
-    return result;
-  }, [getBalances]);
-
-  const settleAllDebtsBetween = useCallback(async (groupId: string, debtor: string, creditor: string, amount?: number) => {
-    setSplitGroups((prev) => {
-      const updated = prev.map((g) => {
-        if (g.id !== groupId) return g;
-        const debtorCanon = resolveMemberInGroup(debtor, g.members) ?? debtor.trim();
-        const creditorCanon = resolveMemberInGroup(creditor, g.members) ?? creditor.trim();
-
-        const expenses = g.expenses.map((e) => {
-          if (e.category === "settlement") return e;
-          const payer = resolveMemberInGroup(e.paidBy, g.members) ?? e.paidBy;
-          const involvesDebtor = e.splitAmong.some((m) => isSameMember(m, debtorCanon, g.members));
-          const involvesCreditor = e.splitAmong.some((m) => isSameMember(m, creditorCanon, g.members));
-          const shouldSettle =
-            (isSameMember(payer, creditorCanon, g.members) && involvesDebtor) ||
-            (isSameMember(payer, debtorCanon, g.members) && involvesCreditor);
-          if (!shouldSettle) return e;
-          const target = isSameMember(payer, creditorCanon, g.members) ? debtorCanon : creditorCanon;
-          const settled = e.settled.some((s) => isSameMember(s, target, g.members))
-            ? e.settled
-            : [...e.settled, target];
-          return { ...e, settled };
-        });
-
-        if (amount && amount > 0) {
-          const settlementExp: SplitExpense = {
-            id: genId(),
-            description: `Settlement: ${debtorCanon} paid ${creditorCanon}`,
-            totalAmount: amount,
-            paidBy: debtorCanon,
-            splitAmong: [creditorCanon],
-            settled: [creditorCanon],
-            date: new Date().toISOString(),
-            splitMode: "equal",
-            customShares: {},
-            category: "settlement",
-          };
-          return { ...g, expenses: [settlementExp, ...expenses] };
-        }
-
-        return { ...g, expenses };
-      });
-      AsyncStorage.setItem("split_groups", JSON.stringify(updated));
-      const syncedGroup = updated.find((g) => g.id === groupId);
-      if (syncedGroup) syncGroupToRemote(syncedGroup);
-      return updated;
-    });
-  }, [syncGroupToRemote]);
-
-  const addGroupMember = useCallback(async (groupId: string, member: string) => {
-    setSplitGroups((prev) => {
-      const updated = prev.map((g) => {
-        if (g.id !== groupId || g.members.some((m) => isSameMember(m, member, g.members))) return g;
-        return { ...g, members: [...g.members, member] };
-      });
-      AsyncStorage.setItem("split_groups", JSON.stringify(updated));
-      const syncedGroup = updated.find((g) => g.id === groupId);
-      if (syncedGroup) syncGroupToRemote(syncedGroup);
-      return updated;
-    });
-  }, [syncGroupToRemote]);
-
-  const removeGroupMember = useCallback(async (groupId: string, member: string) => {
-    let success = false;
-    setSplitGroups((prev) => {
-      const updated = prev.map((g) => {
-        if (g.id !== groupId) return g;
-        const canon = resolveMemberInGroup(member, g.members) ?? member;
-        const balance = getBalances(g)[canon] ?? 0;
-        if (Math.abs(balance) > 0.01) return g;
-        success = true;
-        return {
-          ...g,
-          members: g.members.filter((m) => !isSameMember(m, canon, g.members)),
-        };
-      });
-      if (success) {
-        AsyncStorage.setItem("split_groups", JSON.stringify(updated));
-        const syncedGroup = updated.find((g) => g.id === groupId);
-        if (syncedGroup) syncGroupToRemote(syncedGroup);
-      }
-      return updated;
-    });
-    return success;
-  }, [getBalances, syncGroupToRemote]);
-
+  // ── Derived State Calculations (Master Orchestrator) ──
   const allExpenses = useMemo(() => {
     const myName = profile?.name ?? "You";
     const sharedExpenses: Expense[] = [];
@@ -872,167 +550,40 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [getCurrentMonthExpenses]
   );
 
-  const refreshGroup = useCallback(async (groupId: string) => {
-    if (!SUPABASE_ENABLED) return;
-    const remote = await fetchGroup(groupId);
-    if (remote) {
-      setSplitGroups((prev) => {
-        const updated = prev.map((g) => {
-          if (g.id !== groupId) return g;
-          const mergedExpensesMap = new Map<string, SplitExpense>();
-          [...remote.expenses, ...g.expenses].forEach((e) => {
-            const existing = mergedExpensesMap.get(e.id);
-            if (existing) {
-              const mergedSettled = [...new Set([...existing.settled, ...e.settled])];
-              mergedExpensesMap.set(e.id, { ...existing, settled: mergedSettled });
-            } else {
-              mergedExpensesMap.set(e.id, e);
-            }
-          });
-          const merged = Array.from(mergedExpensesMap.values()).sort(
-            (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-          );
-          const combinedMembers = [...new Set([...remote.members, ...g.members])];
-          return { ...g, ...remote, expenses: merged, members: combinedMembers };
+  const getSimplifiedBalances = useCallback((group: SplitGroup) => {
+    const raw = getBalances(group);
+    const creditors: { name: string; amount: number }[] = [];
+    const debtors: { name: string; amount: number }[] = [];
+
+    group.members.forEach((m) => {
+      const balance = raw[m] ?? 0;
+      if (balance > 0.01) creditors.push({ name: m, amount: balance });
+      if (balance < -0.01) debtors.push({ name: m, amount: Math.abs(balance) });
+    });
+
+    creditors.sort((a, b) => b.amount - a.amount);
+    debtors.sort((a, b) => b.amount - a.amount);
+
+    const result: Array<{ from: string; to: string; amount: number }> = [];
+    let ci = 0;
+    let di = 0;
+    while (ci < creditors.length && di < debtors.length) {
+      const amount = Math.min(creditors[ci].amount, debtors[di].amount);
+      if (amount > 0.01) {
+        result.push({
+          from: debtors[di].name,
+          to: creditors[ci].name,
+          amount: Math.round(amount * 100) / 100,
         });
-        AsyncStorage.setItem("split_groups", JSON.stringify(updated));
-        return updated;
-      });
+      }
+      creditors[ci].amount -= amount;
+      debtors[di].amount -= amount;
+      if (creditors[ci].amount <= 0.01) ci += 1;
+      if (debtors[di].amount <= 0.01) di += 1;
     }
-  }, []);
 
-  // ── Real-time group subscriptions ────────────────────────────────────
-  const unsubscribesRef = React.useRef<Map<string, () => void>>(new Map());
-  const groupUpdateCallbacksRef = React.useRef<Map<string, (group: SplitGroup) => void>>(new Map());
-
-  // Reconnect subscriptions when app returns from background
-  const [reconnectKey, setReconnectKey] = useState(0);
-
-  // AppState listener to trigger reconnection
-  useEffect(() => {
-    const handleAppStateChange = (nextState: AppStateStatus) => {
-      if (nextState === "active" && SUPABASE_ENABLED) {
-        setReconnectKey((k) => k + 1);
-      }
-    };
-    const sub = AppState.addEventListener("change", handleAppStateChange);
-    return () => sub.remove();
-  }, []);
-
-  useEffect(() => {
-    if (!SUPABASE_ENABLED) return;
-
-    const currentIds = new Set(splitGroups.map((g) => g.id));
-
-    // Update callback mappings first to avoid stale closures
-    splitGroups.forEach((group) => {
-      groupUpdateCallbacksRef.current.set(group.id, (remoteGroup: SplitGroup) => {
-        setSplitGroups((prev) => {
-          const updated = prev.map((g) => {
-            if (g.id !== group.id) return g;
-            // Merge remote expenses and members
-            const mergedExpensesMap = new Map<string, SplitExpense>();
-            // Process remote first so it takes precedence on conflict (last-write-wins)
-            [...remoteGroup.expenses, ...g.expenses].forEach((e) => {
-              const existing = mergedExpensesMap.get(e.id);
-              if (existing) {
-                const mergedSettled = [...new Set([...existing.settled, ...e.settled])];
-                mergedExpensesMap.set(e.id, { ...e, ...existing, settled: mergedSettled });
-              } else {
-                mergedExpensesMap.set(e.id, e);
-              }
-            });
-            const merged = Array.from(mergedExpensesMap.values()).sort(
-              (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-            );
-            const combinedMembers = [...new Set([...remoteGroup.members, ...g.members])];
-            return { ...g, ...remoteGroup, expenses: merged, members: combinedMembers };
-          });
-          AsyncStorage.setItem("split_groups", JSON.stringify(updated));
-          return updated;
-        });
-      });
-    });
-
-    // 1. Unsubscribe from groups that have been deleted/removed
-    unsubscribesRef.current.forEach((unsub, id) => {
-      if (!currentIds.has(id)) {
-        try {
-          unsub();
-        } catch (e) {
-          console.warn("[supabase] unsubscribe failed for group:", id, e);
-        }
-        unsubscribesRef.current.delete(id);
-        groupUpdateCallbacksRef.current.delete(id);
-      }
-    });
-
-    // 2. Subscribe to new groups
-    splitGroups.forEach((group) => {
-      if (unsubscribesRef.current.has(group.id)) return;
-
-      const unsub = subscribeToGroup(group.id, (remoteGroup: SplitGroup) => {
-        const cb = groupUpdateCallbacksRef.current.get(group.id);
-        if (cb) cb(remoteGroup);
-      }, (status: SyncStatus) => {
-        setSyncStatus((prev) => {
-          if (prev[group.id] === status) return prev;
-          return { ...prev, [group.id]: status };
-        });
-      });
-
-      unsubscribesRef.current.set(group.id, unsub);
-    });
-  }, [splitGroups, reconnectKey]);
-
-  // Clean up all subscriptions on unmount
-  useEffect(() => {
-    return () => {
-      if (SUPABASE_ENABLED) {
-        unsubscribesRef.current.forEach((unsub) => {
-          try {
-            unsub();
-          } catch (e) {
-            console.warn("[supabase] unmount unsubscribe failed:", e);
-          }
-        });
-        unsubscribesRef.current.clear();
-      }
-    };
-  }, []);
-
-  const setBudgetLimit = useCallback(async (category: string, amount: number) => {
-    setBudgetLimitsState((prev) => {
-      const updated = { ...prev, [category]: amount };
-      AsyncStorage.setItem("budget_limits", JSON.stringify(updated));
-      return updated;
-    });
-  }, []);
-
-  const getCategoryBudgetPct = useCallback((category: string) => {
-    const limit = budgetLimits[category];
-    if (!limit || limit <= 0) return 0;
-    const spent = getSpentByCategory(category);
-    return Math.min((spent / limit) * 100, 100);
-  }, [budgetLimits, getSpentByCategory]);
-
-  const addCustomCategory = useCallback(async (name: string, color: string, icon: string) => {
-    const newCat: CustomCategory = { id: genId(), name, color, icon };
-    setCustomCategoriesState((prev) => {
-      const updated = [newCat, ...prev];
-      AsyncStorage.setItem("custom_categories", JSON.stringify(updated));
-      return updated;
-    });
-    return newCat.id;
-  }, []);
-
-  const deleteCustomCategory = useCallback(async (id: string) => {
-    setCustomCategoriesState((prev) => {
-      const updated = prev.filter((cat) => cat.id !== id);
-      AsyncStorage.setItem("custom_categories", JSON.stringify(updated));
-      return updated;
-    });
-  }, []);
+    return result;
+  }, [getBalances]);
 
   const getOweSummary = useCallback(() => {
     let totalOwed = 0;
@@ -1047,25 +598,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return { totalOwed, totalOwe };
   }, [splitGroups, getBalances, profile?.name]);
 
-  const joinGroupFromInvite = useCallback(async (groupId: string) => {
-    const existing = splitGroups.find((g) => g.id === groupId);
-    if (existing) return existing;
-
-    if (SUPABASE_ENABLED) {
-      const remote = await fetchGroup(groupId);
-      if (remote) {
-        setSplitGroups((prev) => {
-          if (prev.some((g) => g.id === groupId)) return prev;
-          const updated = [remote, ...prev];
-          AsyncStorage.setItem("split_groups", JSON.stringify(updated));
-          return updated;
-        });
-        return remote;
-      }
-    }
-
-    return null;
-  }, [splitGroups]);
+  const getCategoryBudgetPct = useCallback((category: string) => {
+    const limit = budgetLimits[category];
+    if (!limit || limit <= 0) return 0;
+    const spent = getSpentByCategory(category);
+    return Math.min((spent / limit) * 100, 100);
+  }, [budgetLimits, getSpentByCategory]);
 
   const undoDelete = useCallback(async () => {
     if (!lastDeleted) return;
@@ -1090,12 +628,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         });
         AsyncStorage.setItem("split_groups", JSON.stringify(updated));
         const syncedGroup = updated.find((g) => g.id === groupId);
-        if (syncedGroup) syncGroupToRemote(syncedGroup);
+        if (syncedGroup) {
+          if (SUPABASE_ENABLED) upsertGroup(syncedGroup).catch(() => {});
+        }
         return updated;
       });
     }
     clearLastDeleted();
-  }, [lastDeleted, clearLastDeleted, syncGroupToRemote]);
+  }, [lastDeleted, clearLastDeleted, setExpenses, setSplitGroups]);
 
   const restoreBackup = useCallback(async (jsonStr: string) => {
     const data = JSON.parse(jsonStr);
@@ -1106,7 +646,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       throw new Error("Invalid backup: missing essential data");
     }
 
-    // Strict validation to prevent state corruption
     if (data.expenses && !Array.isArray(data.expenses)) {
       throw new Error("Invalid backup: 'expenses' must be an array");
     }
@@ -1124,7 +663,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
 
     if (data.user_profile) {
-      setProfileState(data.user_profile);
+      setProfile(data.user_profile);
       await AsyncStorage.setItem("user_profile", JSON.stringify(data.user_profile));
     }
     if (data.expenses) {
@@ -1143,18 +682,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setCustomCategoriesState(data.custom_categories);
       await AsyncStorage.setItem("custom_categories", JSON.stringify(data.custom_categories));
     }
-  }, []);
+  }, [setProfile, setExpenses, setSplitGroups, setBudgetLimitsState, setCustomCategoriesState]);
 
   const clearAllData = useCallback(async () => {
     const keys = ["user_profile", "expenses", "split_groups", "budget_limits", "custom_categories"];
     await Promise.all(keys.map(k => AsyncStorage.removeItem(k)));
-    setProfileState(null);
+    setProfile(null);
     setExpenses([]);
     setSplitGroups([]);
     setBudgetLimitsState({});
     setCustomCategoriesState([]);
     setLastDeleted(null);
-  }, []);
+  }, [setProfile, setExpenses, setSplitGroups, setBudgetLimitsState, setCustomCategoriesState]);
 
   return (
     <AppContext.Provider
@@ -1167,6 +706,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         addExpense,
         editExpense,
         deleteExpense,
+        deleteRecurringExpenseSeries,
         splitGroups,
         createSplitGroup,
         deleteSplitGroup,

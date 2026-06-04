@@ -53,6 +53,57 @@ function customToItem(c: CustomCategory): CategoryItem {
   };
 }
 
+const KEYWORD_TO_CATEGORY: { category: string; keywords: string[] }[] = [
+  {
+    category: 'healthcare', // Fuel
+    keywords: ['petrol', 'fuel', 'diesel', 'gas', 'cng', 'refuel', 'shell', 'hp petrol', 'indian oil'],
+  },
+  {
+    category: 'entertainment', // Coffee
+    keywords: ['coffee', 'starbucks', 'cafe', 'tea', 'chai', 'blue tokai', 'ccd', 'nescafe', 'espresso', 'cappuccino', 'latte', 'macchiato'],
+  },
+  {
+    category: 'food', // Food
+    keywords: ['food', 'lunch', 'dinner', 'breakfast', 'brunch', 'swiggy', 'zomato', 'restaurant', 'burger', 'pizza', 'kfc', 'mcdonald', 'grocery', 'groceries', 'maggi', 'supermarket', 'snack', 'snacks', 'eat'],
+  },
+  {
+    category: 'shopping', // Shopping
+    keywords: ['shopping', 'amazon', 'flipkart', 'myntra', 'zara', 'h&m', 'clothes', 'shoes', 'dress', 'mall', 'electronics', 'phone'],
+  },
+  {
+    category: 'travel', // Travel
+    keywords: ['travel', 'flight', 'train', 'bus', 'uber', 'ola', 'rapido', 'cab', 'taxi', 'hotel', 'airbnb', 'trip', 'vacation', 'ticket', 'indigo', 'irctc'],
+  },
+];
+
+function classifyText(text: string, customCategories: CustomCategory[]): string | null {
+  const normalized = text.toLowerCase().trim();
+  if (!normalized) return null;
+
+  // First check custom categories
+  for (const c of customCategories) {
+    const catName = c.name.toLowerCase().trim();
+    if (catName.length > 2) {
+      const regex = new RegExp(`\\b${catName}\\b`, 'i');
+      if (regex.test(normalized)) {
+        return c.id;
+      }
+    }
+  }
+
+  // Then check default keyword mapping
+  for (const item of KEYWORD_TO_CATEGORY) {
+    for (const kw of item.keywords) {
+      const regex = new RegExp(`\\b${kw}\\b`, 'i');
+      if (regex.test(normalized)) {
+        return item.category;
+      }
+    }
+  }
+
+  return null;
+}
+
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 export default function QuickLogScreen() {
@@ -72,6 +123,7 @@ export default function QuickLogScreen() {
   const [recentKeys, setRecentKeys] = useState<string[]>([]);
   const [hasInitializedCategory, setHasInitializedCategory] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const isSavingRef = useRef(false);
 
   // Success animation
   const successScale = useRef(new Animated.Value(0)).current;
@@ -165,14 +217,17 @@ export default function QuickLogScreen() {
   }, [router]);
 
   const handleSave = useCallback(async () => {
+    if (isSavingRef.current) return;
+
     const resolvedAmt = evaluateMathExpression(amount);
-    const parsed = resolvedAmt !== null ? resolvedAmt : parseFloat(amount);
+    const parsed = resolvedAmt !== null ? Math.round(resolvedAmt * 100) / 100 : parseFloat(amount);
     if (!amount || isNaN(parsed) || parsed <= 0) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       setErrorMsg("Please enter a valid expense amount greater than zero.");
       return;
     }
 
+    isSavingRef.current = true;
     setSaving(true);
     try {
       await addExpense({
@@ -205,6 +260,7 @@ export default function QuickLogScreen() {
         }, 900);
       });
     } catch (e) {
+      isSavingRef.current = false;
       setSaving(false);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     }
@@ -337,7 +393,14 @@ export default function QuickLogScreen() {
                 placeholder="e.g. Lunch at cafe"
                 placeholderTextColor={colors.mutedForeground + '60'}
                 value={description}
-                onChangeText={setDescription}
+                onChangeText={(text) => {
+                  setDescription(text);
+                  const matched = classifyText(text, customCategories);
+                  if (matched && matched !== selectedCategory) {
+                    setSelectedCategory(matched);
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+                  }
+                }}
                 returnKeyType="done"
                 onSubmitEditing={() => Keyboard.dismiss()}
               />

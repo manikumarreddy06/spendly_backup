@@ -30,6 +30,7 @@ import { formatTable, formatKeyValue } from "@/lib/tableFormatter";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { SUPABASE_ENABLED } from "@/lib/config";
 import { adsManager } from "@/lib/ads";
+import { exportFile, escapeCSVCell } from "@/lib/csvExporter";
 import {
   getExpenseMemberShare,
   isExpenseSettledFor,
@@ -152,6 +153,7 @@ function SplitGroupDetail() {
   const [selectedCategory, setSelectedCategory] = useState<string>("others");
   const [showCategoryPicker, setShowCategoryPicker] = useState(false);
   const [focusedField, setFocusedField] = useState<string | null>(null);
+  const isSavingRef = useRef(false);
 
   const [lastUsedSettings, setLastUsedSettings] = useState<{
     splitMode: SplitMode;
@@ -335,8 +337,10 @@ function SplitGroupDetail() {
   };
 
   const handleAdd = async () => {
+    if (isSavingRef.current) return;
+
     const resolvedAmt = evaluateMathExpression(totalAmt);
-    const amt = resolvedAmt !== null ? resolvedAmt : parseFloat(totalAmt);
+    const amt = resolvedAmt !== null ? Math.round(resolvedAmt * 100) / 100 : Math.round(parseFloat(totalAmt) * 100) / 100;
     if (!totalAmt || isNaN(amt) || amt <= 0) { Alert.alert("Invalid amount", "Please enter a valid amount."); return; }
     if (!paidBy) { Alert.alert("Select Payer", "Select who paid for this expense."); return; }
     if (splitAmong.length === 0) { Alert.alert("Select members", "Select at least one member to split with."); return; }
@@ -345,7 +349,7 @@ function SplitGroupDetail() {
 
     if (splitMode !== "equal") {
       const shares = splitAmong.reduce<Record<string, number>>((acc, m) => {
-        const val = parseFloat(customShares[m] ?? "0");
+        const val = parseFloat(customShares[m] ?? (splitMode === "shares" ? "1" : "0"));
         if (isNaN(val) || val <= 0) acc[m] = 0;
         else acc[m] = val;
         return acc;
@@ -353,7 +357,7 @@ function SplitGroupDetail() {
 
       const hasAllValid = splitAmong.every((m) => (shares[m] ?? 0) > 0);
       if (!hasAllValid) {
-        Alert.alert("Invalid shares", "Enter a valid amount/percentage for every member.");
+        Alert.alert("Invalid shares", "Enter a valid amount/percentage/shares allocation for every member.");
         return;
       }
 
@@ -369,8 +373,15 @@ function SplitGroupDetail() {
           Alert.alert("Amounts don't add up", `Total: ₹${total}. Must equal ₹${amt}.`);
           return;
         }
+      } else if (splitMode === "shares") {
+        const total = Object.values(shares).reduce((s, v) => s + v, 0);
+        if (total <= 0) {
+          Alert.alert("Invalid shares", "Total allocated shares must be greater than 0.");
+          return;
+        }
       }
 
+      isSavingRef.current = true;
       try {
         await addSplitExpense(group.id, {
           description: finalDesc,
@@ -383,10 +394,12 @@ function SplitGroupDetail() {
           date: new Date().toISOString(),
         });
       } catch (err: any) {
+        isSavingRef.current = false;
         Alert.alert("Split Error", err.message || "Could not add expense.");
         return;
       }
     } else {
+      isSavingRef.current = true;
       try {
         await addSplitExpense(group.id, {
           description: finalDesc,
@@ -398,6 +411,7 @@ function SplitGroupDetail() {
           date: new Date().toISOString(),
         });
       } catch (err: any) {
+        isSavingRef.current = false;
         Alert.alert("Split Error", err.message || "Could not add expense.");
         return;
       }
@@ -410,10 +424,11 @@ function SplitGroupDetail() {
       console.error("Failed to save split settings", e);
     }
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    isSavingRef.current = false;
     setModalVisible(false);
   };
 
-  const handleShare = async () => {
+  const shareTextSummary = async () => {
     const memberBalances: string[][] = [];
     group.members.forEach((m) => {
       const bal = balances[m] ?? 0;
@@ -444,6 +459,82 @@ function SplitGroupDetail() {
 
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     await Share.share({ message });
+  };
+
+  const shareCSVLedger = async () => {
+    try {
+      const totalGroupSpend = (group.expenses || [])
+        .filter((e) => e.category !== "settlement")
+        .reduce((sum, e) => sum + e.totalAmount, 0);
+
+      const summaryRows = [
+        ["--- GROUP SUMMARY ---"],
+        ["Group Name", cleanName],
+        ["Members", group.members.join("; ")],
+        ["Invite Code", group.id],
+        ["Total Group Spend (INR)", totalGroupSpend.toFixed(2)],
+        [],
+      ];
+
+      const balanceRows = [
+        ["--- MEMBER BALANCES ---"],
+        ["Member", "Status", "Amount (INR)"],
+        ...group.members.map((m) => {
+          const bal = balances[m] ?? 0;
+          if (bal > 0) return [m, "gets back", bal.toFixed(2)];
+          if (bal < 0) return [m, "owes", Math.abs(bal).toFixed(2)];
+          return [m, "settled", "0.00"];
+        }),
+        [],
+      ];
+
+      const expenseHeader = ["--- DETAILED EXPENSES LOG ---"];
+      const expenseCols = ["Date", "Description", "Category", "Paid By", "Total Amount (INR)", "Split Mode"];
+      const expenseRows = (group.expenses || []).map((e) => {
+        const dateStr = `="${new Date(e.date).toISOString().split("T")[0]}"`;
+        const catLabel = e.category === "settlement" ? "Settlement" : getCategoryVisuals(e.category || "others").label;
+        const splitModeLabel = e.category === "settlement" ? "Settle Up" : (e.splitMode || "equal");
+        return [
+          dateStr,
+          e.description || catLabel,
+          catLabel,
+          e.paidBy,
+          e.totalAmount.toFixed(2),
+          splitModeLabel,
+        ];
+      });
+
+      const csvLines: string[] = [];
+      summaryRows.forEach((r) => csvLines.push(r.map(escapeCSVCell).join(",")));
+      balanceRows.forEach((r) => csvLines.push(r.map(escapeCSVCell).join(",")));
+      csvLines.push(escapeCSVCell(expenseHeader[0]));
+      csvLines.push(expenseCols.map(escapeCSVCell).join(","));
+      expenseRows.forEach((r) => csvLines.push(r.map(escapeCSVCell).join(",")));
+
+      const csvStr = csvLines.join("\n");
+      const safeName = cleanName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
+      await exportFile({
+        content: csvStr,
+        filename: `spendly_group_${safeName}_ledger.csv`,
+        mimeType: "text/csv",
+        dialogTitle: `Export Ledger - ${cleanName}`,
+      });
+    } catch (err: any) {
+      Alert.alert("Export Failed", err.message || "Could not export group CSV ledger");
+    }
+  };
+
+  const handleShare = async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    Alert.alert(
+      "Share Group Ledger",
+      "Select an option to share or export your group transactions summary:",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Share Text Summary", onPress: shareTextSummary },
+        { text: "Export Group CSV Ledger", onPress: shareCSVLedger },
+      ]
+    );
   };
 
   const handleAddMember = async () => {
@@ -550,6 +641,10 @@ function SplitGroupDetail() {
       splitAmong.forEach((m) => {
         nextShares[m] = eq;
       });
+    } else if (splitMode === "shares") {
+      splitAmong.forEach((m) => {
+        nextShares[m] = "1";
+      });
     }
     setCustomShares(nextShares);
   };
@@ -579,6 +674,14 @@ function SplitGroupDetail() {
       remainingText = `${remAmt > 0 ? "Remaining" : "Over allocated"}: ₹${Math.abs(remAmt).toLocaleString("en-IN")} of ₹${amtValue.toLocaleString("en-IN")}`;
     } else {
       remainingText = "Balanced: All expenses allocated";
+    }
+  } else if (splitMode === "shares") {
+    allocatedSum = splitAmong.reduce((sum, m) => sum + (parseFloat(customShares[m] ?? "1") || 0), 0);
+    isBalanced = allocatedSum > 0;
+    if (!isBalanced) {
+      remainingText = "Please assign at least 1 share to a member.";
+    } else {
+      remainingText = `Shares split: Total of ${allocatedSum} shares allocated`;
     }
   }
 
@@ -637,6 +740,9 @@ function SplitGroupDetail() {
               </Text>
             </View>
           </View>
+          <Pressable onPress={handleShare} style={s.shareBtn} testID="button-share-group">
+            <Ionicons name="share-social-outline" size={20} color="#fff" />
+          </Pressable>
         </View>
       </LinearGradient>
 
@@ -1424,9 +1530,16 @@ function SplitGroupDetail() {
             {/* Split Mode segmented controls */}
             <Text style={s.fLabel}>SPLIT MODE</Text>
             <View style={s.modePickerRow}>
-              {["equal", "percentage", "custom"].map((mode) => {
+              {["equal", "percentage", "custom", "shares"].map((mode) => {
                 const isActive = splitMode === mode;
-                const modeLabel = mode === "equal" ? "Equal" : mode === "percentage" ? "Percentage" : "Custom";
+                const modeLabel =
+                  mode === "equal"
+                    ? "Equal"
+                    : mode === "percentage"
+                    ? "Percent"
+                    : mode === "custom"
+                    ? "Custom"
+                    : "Shares";
                 return (
                   <TouchableOpacity
                     key={mode}
@@ -1452,6 +1565,11 @@ function SplitGroupDetail() {
                             });
                             setCustomShares(nextShares);
                           }
+                        } else if (mode === "shares") {
+                          splitAmong.forEach((m) => {
+                            nextShares[m] = "1";
+                          });
+                          setCustomShares(nextShares);
                         }
                       }
                     }}
@@ -1514,14 +1632,52 @@ function SplitGroupDetail() {
                             ₹
                           </Text>
                         )}
-                        <TextInput
-                          style={s.splitShareTextInput}
-                          placeholder="0"
-                          placeholderTextColor={colors.mutedForeground}
-                          keyboardType="decimal-pad"
-                          value={customShares[member] ?? ""}
-                          onChangeText={(v) => setCustomShares((prev) => ({ ...prev, [member]: v }))}
-                        />
+                        {splitMode === "shares" ? (
+                          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                            <TouchableOpacity
+                              onPress={() => {
+                                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+                                const current = parseFloat(customShares[member] ?? "1") || 0;
+                                const next = Math.max(0, current - 1);
+                                setCustomShares((prev) => ({ ...prev, [member]: next.toString() }));
+                              }}
+                              style={{ padding: 4 }}
+                            >
+                              <Ionicons name="remove-circle-outline" size={20} color={colors.primary} />
+                            </TouchableOpacity>
+                            <TextInput
+                              style={[s.splitShareTextInput, { width: 30, textAlign: "center" }]}
+                              placeholder="1"
+                              placeholderTextColor={colors.mutedForeground}
+                              keyboardType="numeric"
+                              value={customShares[member] ?? "1"}
+                              onChangeText={(v) => setCustomShares((prev) => ({ ...prev, [member]: v }))}
+                            />
+                            <TouchableOpacity
+                              onPress={() => {
+                                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+                                const current = parseFloat(customShares[member] ?? "1") || 0;
+                                const next = current + 1;
+                                setCustomShares((prev) => ({ ...prev, [member]: next.toString() }));
+                              }}
+                              style={{ padding: 4 }}
+                            >
+                              <Ionicons name="add-circle-outline" size={20} color={colors.primary} />
+                            </TouchableOpacity>
+                            <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: colors.mutedForeground, marginLeft: 2 }}>
+                              sh
+                            </Text>
+                          </View>
+                        ) : (
+                          <TextInput
+                            style={s.splitShareTextInput}
+                            placeholder="0"
+                            placeholderTextColor={colors.mutedForeground}
+                            keyboardType="decimal-pad"
+                            value={customShares[member] ?? ""}
+                            onChangeText={(v) => setCustomShares((prev) => ({ ...prev, [member]: v }))}
+                          />
+                        )}
                         {splitMode === "percentage" && (
                           <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.mutedForeground, marginLeft: 2 }}>
                             %
@@ -1784,6 +1940,15 @@ const detailStyles = (
       backgroundColor: "rgba(255,255,255,0.22)",
       alignItems: "center",
       justifyContent: "center",
+    },
+    shareBtn: {
+      width: 38,
+      height: 38,
+      borderRadius: 12,
+      backgroundColor: "rgba(255,255,255,0.22)",
+      alignItems: "center",
+      justifyContent: "center",
+      marginLeft: 10,
     },
     groupName: {
       fontSize: 20,

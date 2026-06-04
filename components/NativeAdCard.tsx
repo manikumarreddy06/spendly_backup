@@ -53,15 +53,6 @@ const DEFAULT_CAMPAIGNS: AdCampaign[] = [
     url: "https://play.google.com/store/apps/details?id=com.spendlyapp.personal",
     gradientColors: ["#b45309", "#78350f"], // Amber Gold
   },
-  {
-    id: "support_us",
-    title: "Support Independent Dev",
-    description: "Consider supporting independent development. It helps add new features and keeps Spendly completely free.",
-    ctaText: "Support Dev",
-    icon: "heart",
-    url: "https://ko-fi.com",
-    gradientColors: ["#4f46e5", "#312e81"], // Indigo/Navy
-  },
 ];
 
 const DISMISS_KEY = "@spendly_ad_dismissed_time";
@@ -81,6 +72,8 @@ export function NativeAdCard({ placement = "dashboard" }: { placement?: "dashboa
 
   // Initialize AdMob SDK on native mount
   useEffect(() => {
+    if (!ADS_ENABLED) return;
+
     const initAds = async () => {
       try {
         const mobileAds = typeof AdMob === "function" ? AdMob : AdMob?.default;
@@ -249,7 +242,7 @@ export function NativeAdCard({ placement = "dashboard" }: { placement?: "dashboa
         {/* Sponsor label */}
         <View style={styles.headerRow}>
           <View style={styles.sponsorBadge}>
-            <Text style={styles.sponsorText}>SPONSORED</Text>
+            <Text style={styles.sponsorText}>RECOMMENDED</Text>
           </View>
           <TouchableOpacity
             style={styles.closeBtn}

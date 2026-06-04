@@ -15,7 +15,7 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useApp, parseGroupName } from "@/context/AppContext";
+import { useApp, parseGroupName, parseGroupInviteCode } from "@/context/AppContext";
 import { useColors } from "@/hooks/useColors";
 
 export default function JoinGroupScreen() {
@@ -31,7 +31,8 @@ export default function JoinGroupScreen() {
   const [joining, setJoining] = useState(false);
 
   const topPad = Platform.OS === "web" ? 67 : insets.top;
-  const alreadyMember = id ? splitGroups.some((g) => g.id === id) : false;
+  const parsedInvite = id ? parseGroupInviteCode(id) : null;
+  const alreadyMember = parsedInvite ? splitGroups.some((g) => g.id === parsedInvite.id) : false;
 
   useEffect(() => {
     if (!id) {
@@ -63,7 +64,7 @@ export default function JoinGroupScreen() {
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     
     if (alreadyMember) {
-      router.replace(`/split/${id}`);
+      router.replace(`/split/${parsedInvite?.id ?? id}`);
       return;
     }
 
@@ -72,7 +73,7 @@ export default function JoinGroupScreen() {
     setJoining(false);
 
     if (success) {
-      router.replace(`/split/${id}`);
+      router.replace(`/split/${success.id}`);
     } else {
       setErrorMsg("Failed to sync and join this split group. Please try again.");
     }

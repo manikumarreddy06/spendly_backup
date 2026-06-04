@@ -37,6 +37,7 @@ import { isSameMember, getExpenseMemberConsumptionShare, evaluateMathExpression 
 import { BUILTIN_CATEGORIES, resolveExpenseMeta } from "@/constants/categories";
 import { formatTable, formatKeyValue } from "@/lib/tableFormatter";
 import { useRouter } from "expo-router";
+import { exportFile, escapeCSVCell } from "@/lib/csvExporter";
 
 const BUILTIN_KEYS = BUILTIN_CATEGORIES.map((c) => c.key);
 
@@ -132,6 +133,7 @@ function HistoryScreen() {
   const [editDesc, setEditDesc] = useState("");
   const [editAmount, setEditAmount] = useState("");
   const [editCategory, setEditCategory] = useState("");
+  const isSavingRef = useRef(false);
 
   // Animated Toast states for undo
   const toastY = useRef(new Animated.Value(100)).current;
@@ -330,22 +332,19 @@ function HistoryScreen() {
     });
   }, [selectedDate]);
 
-  const handleShareMonthlyReport = async () => {
-    const personalExps = filtered.filter(e => e.isDebit && !e.id.includes("-"));
-
+  const shareTextSummary = async () => {
+    const personalExps = filtered.filter(e => e.isDebit && e.subtitle === "Personal");
     if (personalExps.length === 0) {
       Alert.alert("No Data", "No personal expenses this month to share.");
       return;
     }
-
     const total = personalExps.reduce((s, e) => s + e.amount, 0);
     const byCategory: Record<string, number> = {};
     personalExps.forEach((e) => {
       byCategory[e.category] = (byCategory[e.category] ?? 0) + e.amount;
     });
 
-        const mkLabel = (cat: string) => resolveExpenseMeta(cat, customCategories, colors).label;
-
+    const mkLabel = (cat: string) => resolveExpenseMeta(cat, customCategories, colors).label;
     const catRows = Object.entries(byCategory)
       .sort((a, b) => b[1] - a[1])
       .map(([cat, amt]) => [mkLabel(cat), `₹${amt.toLocaleString("en-IN")}`]);
@@ -385,7 +384,47 @@ function HistoryScreen() {
 
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     await Share.share({ message });
+  };
 
+  const shareCSVSpreadsheet = async () => {
+    if (filtered.length === 0) {
+      Alert.alert("No Data", "No transactions this month to export.");
+      return;
+    }
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    try {
+      const headers = ["Date", "Category", "Description", "Amount (INR)", "Type"];
+      const rows = filtered.map(e => {
+        const cat = resolveExpenseMeta(e.category, customCategories, colors);
+        const catLabel = cat ? cat.label : "Others";
+        const dateStr = `="${new Date(e.date).toISOString().split("T")[0]}"`;
+        const typeStr = e.subtitle.split(" · ")[0] || "Personal";
+        return `${escapeCSVCell(dateStr)},${escapeCSVCell(catLabel)},${escapeCSVCell(e.description || "")},${e.amount},${escapeCSVCell(typeStr)}`;
+      });
+      const csvStr = [headers.join(","), ...rows].join("\n");
+      const monthStr = selectedDate.toISOString().slice(0, 7); // e.g. 2026-06
+      await exportFile({
+        content: csvStr,
+        filename: `spendly_monthly_report_${monthStr}.csv`,
+        mimeType: "text/csv",
+        dialogTitle: `Export Monthly Report - ${currentMonthKey}`,
+      });
+    } catch (err: any) {
+      Alert.alert("Export Failed", err.message || "Failed to export monthly CSV spreadsheet");
+    }
+  };
+
+  const handleShareMonthlyReport = async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    Alert.alert(
+      "Share Monthly Report",
+      "Select an option to share or export your monthly transactions summary:",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Share Text Summary", onPress: shareTextSummary },
+        { text: "Export CSV Spreadsheet", onPress: shareCSVSpreadsheet },
+      ]
+    );
   };
 
   const handleDelete = (exp: HistoryItem) => {
@@ -434,22 +473,24 @@ function HistoryScreen() {
   };
 
   const handleSaveEdit = async () => {
+    if (isSavingRef.current) return;
     if (!editingExpense) return;
     if (!editDesc.trim()) {
       Alert.alert("Missing description", "Please enter a description.");
       return;
     }
     const resolvedAmt = evaluateMathExpression(editAmount);
-    const amt = resolvedAmt !== null ? resolvedAmt : parseFloat(editAmount);
+    const amt = resolvedAmt !== null ? Math.round(resolvedAmt * 100) / 100 : parseFloat(editAmount);
     if (isNaN(amt) || amt <= 0) {
       Alert.alert("Invalid amount", "Please enter a valid amount.");
       return;
     }
 
+    isSavingRef.current = true;
     try {
       await editExpense(editingExpense.id, {
         description: editDesc.trim(),
-        amount: amt,
+        amount: Math.round(amt * 100) / 100,
         category: editCategory,
       });
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -457,6 +498,8 @@ function HistoryScreen() {
       setEditingExpense(null);
     } catch (err: any) {
       Alert.alert("Error", err.message || "Failed to update expense.");
+    } finally {
+      isSavingRef.current = false;
     }
   };
 

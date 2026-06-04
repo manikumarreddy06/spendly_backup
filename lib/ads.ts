@@ -21,11 +21,13 @@ class InterstitialAdManager {
   private adUnitId = ADMOB_INTERSTITIAL_AD_UNIT_ID;
 
   constructor() {
-    this.init();
+    if (ADS_ENABLED) {
+      this.init();
+    }
   }
 
   private async init() {
-    if (Platform.OS === "web" || !InterstitialAd) return;
+    if (!ADS_ENABLED || Platform.OS === "web" || !InterstitialAd) return;
 
     try {
       // 1. Centralized SDK Initialization
@@ -66,6 +68,7 @@ class InterstitialAdManager {
   }
 
   public load() {
+    if (!ADS_ENABLED) return;
     if (this.interstitial && !this.isLoaded) {
       try {
         this.interstitial.load();

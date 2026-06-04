@@ -13,10 +13,11 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View,
   Switch,
   Share,
   Modal,
+  Linking,
+  View,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -25,6 +26,7 @@ import { useColors } from "@/hooks/useColors";
 import { BUILTIN_CATEGORIES } from "@/constants/categories";
 import { InlineError } from "@/components/InlineError";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { exportFile, escapeCSVCell } from "@/lib/csvExporter";
 
 const CATEGORIES = BUILTIN_CATEGORIES;
 
@@ -38,7 +40,6 @@ function ProfileScreen() {
     budgetLimits,
     setBudgetLimit,
     customCategories,
-    deleteCustomCategory,
     restoreBackup,
     expenses,
     splitGroups,
@@ -79,7 +80,7 @@ function ProfileScreen() {
   }, []);
 
   const handleToggleAdFree = async (val: boolean) => {
-    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     setAdFreeMode(val);
     try {
       const nextSettings = { adFreeMode: val };
@@ -93,7 +94,7 @@ function ProfileScreen() {
 
   const handleClearAllData = async () => {
     try {
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
     } catch {}
     Alert.alert(
       "Clear All Data",
@@ -115,7 +116,7 @@ function ProfileScreen() {
                   onPress: async () => {
                     await clearAllData();
                     try {
-                      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
                     } catch {}
                     Alert.alert("Data Cleared", "All data has been successfully cleared.", [
                       {
@@ -141,20 +142,22 @@ function ProfileScreen() {
       Alert.alert("No Data", "There are no expenses to export.");
       return;
     }
-    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     try {
       const headers = ["Date", "Category", "Description", "Amount (INR)"];
       const rows = expenses.map(e => {
         const cat = CATEGORIES.find(c => c.key === e.category);
         const catLabel = cat ? cat.label : (customCategories.find(c => c.id === e.category)?.name || "Others");
-        const desc = e.description || "";
-        const cleanDesc = desc.replace(/"/g, '""');
-        return `"${e.date}","${catLabel}","${cleanDesc}",${e.amount}`;
+        const dateStr = `="${new Date(e.date).toISOString().split("T")[0]}"`;
+        return `${escapeCSVCell(dateStr)},${escapeCSVCell(catLabel)},${escapeCSVCell(e.description || "")},${e.amount}`;
       });
       const csvStr = [headers.join(","), ...rows].join("\n");
-      await Share.share({
-        message: csvStr,
-        title: "Spendly Transactions Export",
+      const dateStr = new Date().toISOString().split("T")[0];
+      await exportFile({
+        content: csvStr,
+        filename: `spendly_expenses_all_${dateStr}.csv`,
+        mimeType: "text/csv",
+        dialogTitle: "Export Personal Expenses",
       });
     } catch (e: any) {
       Alert.alert("Export Failed", e.message || "Could not export CSV");
@@ -162,7 +165,7 @@ function ProfileScreen() {
   };
 
   const handleExportJSON = async () => {
-    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     try {
       const backupData = {
         spendly_backup_version: 1,
@@ -173,9 +176,12 @@ function ProfileScreen() {
         custom_categories: customCategories,
       };
       const jsonStr = JSON.stringify(backupData, null, 2);
-      await Share.share({
-        message: jsonStr,
-        title: "Spendly JSON Backup",
+      const dateStr = new Date().toISOString().split("T")[0];
+      await exportFile({
+        content: jsonStr,
+        filename: `spendly_backup_${dateStr}.json`,
+        mimeType: "application/json",
+        dialogTitle: "Export JSON Backup",
       });
     } catch (e: any) {
       Alert.alert("Backup Failed", e.message || "Could not export JSON backup");
@@ -199,7 +205,7 @@ function ProfileScreen() {
           onPress: async () => {
             try {
               await restoreBackup(restoreText.trim());
-              await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
               Alert.alert("Success", "Backup data restored successfully!");
               setRestoreModalVisible(false);
               setRestoreText("");
@@ -229,10 +235,12 @@ function ProfileScreen() {
     return [...builtin, ...custom];
   }, [customCategories]);
 
-  // Sync state data on mount/changes
+  // Sync state data on profile changes
   useEffect(() => {
-    setName(profile?.name ?? "");
-    setSalary(profile?.salary?.toString() ?? "");
+    if (profile) {
+      setName(profile.name ?? "");
+      setSalary(profile.salary?.toString() ?? "");
+    }
   }, [profile]);
 
   useEffect(() => {
@@ -243,63 +251,87 @@ function ProfileScreen() {
     setLimits(nextLimits);
   }, [allCategories, budgetLimits]);
 
-  // --- Handlers ---
-  const handleSaveProfile = async () => {
-    let hasError = false;
-    if (!name.trim()) {
-      setNameError("Please enter your name.");
-      hasError = true;
+  // --- Autosave Handlers ---
+  const handleBlurName = async () => {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setNameError("Name cannot be empty.");
+      setTimeout(() => {
+        setName(profile?.name ?? "");
+        setNameError("");
+      }, 1500);
+      return;
     }
+    setNameError("");
+    if (trimmed !== profile?.name) {
+      try {
+        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+        await setProfile({ name: trimmed, salary: profile?.salary ?? 0, currency: "₹" });
+      } catch (e) {
+        console.warn("Failed to autosave name:", e);
+      }
+    }
+  };
+
+  const handleBlurSalary = async () => {
     const sal = parseFloat(salary);
     if (!salary || isNaN(sal) || sal <= 0) {
-      setSalaryError("Please enter a valid amount.");
-      hasError = true;
+      setSalaryError("Enter a valid monthly budget.");
+      setTimeout(() => {
+        setSalary(profile?.salary?.toString() ?? "");
+        setSalaryError("");
+      }, 1500);
+      return;
     }
-    if (hasError) return;
-    setNameError("");
     setSalaryError("");
-    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    await setProfile({ name: name.trim(), salary: sal, currency: "₹" });
-    Alert.alert("Saved", "Profile updated successfully.");
+    if (sal !== profile?.salary) {
+      try {
+        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+        await setProfile({ name: profile?.name ?? "", salary: sal, currency: "₹" });
+      } catch (e) {
+        console.warn("Failed to autosave monthly budget:", e);
+      }
+    }
   };
 
-  const handleSaveBudgets = async () => {
-    await Promise.all(
-      allCategories.map(async (cat) => {
-        const val = parseFloat(limits[cat.key] ?? "");
-        await setBudgetLimit(cat.key, isNaN(val) || val < 0 ? 0 : val);
-      })
-    );
-    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    Alert.alert("Saved", "Budget limits updated.");
+  const handleBlurCategoryLimit = async (key: string, valStr: string) => {
+    const val = parseFloat(valStr);
+    const resolvedVal = isNaN(val) || val < 0 ? 0 : val;
+    const currentVal = budgetLimits[key] ?? 0;
+    
+    if (resolvedVal !== currentVal) {
+      try {
+        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+        await setBudgetLimit(key, resolvedVal);
+      } catch (e) {
+        console.warn(`Failed to autosave budget for category ${key}:`, e);
+      }
+    }
   };
 
-  const handleDeleteCategory = (id: string, name: string) => {
-    Alert.alert(
-      "Delete Category",
-      `Are you sure you want to delete "${name}"? Expenses in this category will default to "Others".`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async () => {
-            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-            await deleteCustomCategory(id);
-          },
-        },
-      ]
-    );
+  const handleRateApp = async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    const url = "https://play.google.com/store/apps/details?id=com.spendlyapp.personal";
+    try {
+      await Linking.openURL(url);
+    } catch {
+      Alert.alert("Error", "Could not open Play Store link.");
+    }
   };
 
-
-
+  const handleShareApp = async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    try {
+      await Share.share({
+        message: "Check out Spendly! It's a premium, offline-first personal finance and group bill split tracker. Download it here: https://play.google.com/store/apps/details?id=com.spendlyapp.personal",
+      });
+    } catch (e) {
+      console.warn("Failed to share app:", e);
+    }
+  };
 
   const isDark = colors.background !== "#f4faf6";
-  const gradientColors = isDark 
-    ? ["#0b1610", "#080c09", "#080c09"] 
-    : ["#dff5e8", "#ecf7f0", "#f4faf6"];
-
+  const initial = (profile?.name || "U")[0].toUpperCase();
   const s = profileStyles(colors, topPad, bottomPad);
 
   return (
@@ -307,75 +339,80 @@ function ProfileScreen() {
       behavior={Platform.OS === "ios" ? "padding" : "height"}
       style={{ flex: 1, backgroundColor: colors.background }}
     >
-      {/* Header */}
-      <LinearGradient
-        colors={gradientColors as any}
-        locations={[0, 0.35, 1]}
-        style={[s.header, { paddingTop: topPad + 14 }]}
-      >
+      {/* Sleek Navigation Bar */}
+      <View style={[s.header, { paddingTop: topPad + 10 }]}>
         <Pressable onPress={() => router.back()} style={({ pressed }) => [s.backBtn, pressed && { opacity: 0.7 }]}>
-          <View style={s.backBtnInner}>
-            <Ionicons name="arrow-back" size={22} color={isDark ? "#fff" : colors.foreground} />
-          </View>
-          <InlineError message={nameError} visible={!!nameError} />
+          <Ionicons name="arrow-back" size={22} color={colors.foreground} />
         </Pressable>
-        <Text style={s.headerTitle}>Profile & Settings</Text>
-        <Text style={s.headerSub}>Manage your account preferences</Text>
-      </LinearGradient>
+        <Text style={s.headerTitle}>Settings</Text>
+        <View style={{ width: 24 }} />
+      </View>
 
       <ScrollView
         contentContainerStyle={[s.scroll, { paddingBottom: bottomPad + 32 }]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {/* Profile Card */}
-        <Text style={s.sectionLabel}>👤 Personal Profile</Text>
+        {/* Profile Avatar Header */}
+        <View style={s.avatarZone}>
+          <View style={[s.avatarCircle, { backgroundColor: colors.primary + "15" }]}>
+            <Text style={[s.avatarInitial, { color: colors.primary }]}>{initial}</Text>
+          </View>
+          <Text style={s.avatarName}>{profile?.name || "User"}</Text>
+          <Text style={s.avatarBudget}>
+            Monthly Budget: ₹{Math.round(profile?.salary ?? 0).toLocaleString("en-IN")}
+          </Text>
+        </View>
+
+        {/* Group 1: Account Settings */}
+        <Text style={s.groupLabel}>Account</Text>
         <View style={s.card}>
-          <Text style={s.fieldLabel}>Your Name</Text>
-          <View style={s.inputWrap}>
-            <Ionicons name="person-outline" size={18} color={colors.mutedForeground} style={{ marginRight: 10 }} />
+          <View style={s.inputRow}>
+            <Ionicons name="person-outline" size={18} color={colors.mutedForeground} style={s.rowIcon} />
+            <Text style={s.rowLabel}>Name</Text>
             <TextInput
               testID="input-profile-name"
-              style={s.input}
+              style={s.rowInput}
               value={name}
               onChangeText={(t) => { setName(t); if (nameError) setNameError(""); }}
-              placeholder="Your name"
+              onBlur={handleBlurName}
+              placeholder="Your Name"
               placeholderTextColor={colors.mutedForeground}
               autoCapitalize="words"
             />
           </View>
+          
+          <View style={s.divider} />
 
-          <Text style={[s.fieldLabel, { marginTop: 16 }]}>Monthly Budget / Salary</Text>
-          <View style={s.inputWrap}>
-            <Text style={[s.rupee, { color: colors.mutedForeground }]}>₹</Text>
+          <View style={s.inputRow}>
+            <Ionicons name="wallet-outline" size={18} color={colors.mutedForeground} style={s.rowIcon} />
+            <Text style={s.rowLabel}>Monthly Budget</Text>
+            <Text style={s.inputRupee}>₹</Text>
             <TextInput
               testID="input-profile-salary"
-              style={[s.input, { fontSize: 17, fontFamily: "Inter_600SemiBold" }]}
+              style={[s.rowInput, s.salaryInput]}
               value={salary}
               onChangeText={(t) => { setSalary(t); if (salaryError) setSalaryError(""); }}
+              onBlur={handleBlurSalary}
               placeholder="50000"
               placeholderTextColor={colors.mutedForeground}
               keyboardType="numeric"
             />
           </View>
-          <InlineError message={salaryError} visible={!!salaryError} />
-
-          <TouchableOpacity
-            testID="button-save-profile"
-            onPress={handleSaveProfile}
-            style={s.saveBtn}
-            activeOpacity={0.85}
-          >
-            <Ionicons name="checkmark-circle-outline" size={18} color="#fff" style={{ marginRight: 6 }} />
-            <Text style={s.saveBtnText}>Save Details</Text>
-          </TouchableOpacity>
         </View>
+        {nameError ? (
+          <View style={s.errorMargin}>
+            <InlineError message={nameError} visible={!!nameError} />
+          </View>
+        ) : null}
+        {salaryError ? (
+          <View style={s.errorMargin}>
+            <InlineError message={salaryError} visible={!!salaryError} />
+          </View>
+        ) : null}
 
-        {/* Budget Limits Section */}
-        <Text style={[s.sectionLabel, { marginTop: 24 }]}>💰 Category Budgets</Text>
-        <Text style={s.sectionHint}>
-          Set a monthly spending cap per category. Leave blank for no limit.
-        </Text>
+        {/* Group 2: Category Budgets */}
+        <Text style={s.groupLabel}>Spending Caps</Text>
         <View style={s.card}>
           <TouchableOpacity
             activeOpacity={0.7}
@@ -383,14 +420,12 @@ function ProfileScreen() {
               await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
               setBudgetsExpanded(!budgetsExpanded);
             }}
-            style={[s.collapsibleHeader, { marginBottom: budgetsExpanded ? 16 : 0 }]}
+            style={s.collapsibleHeaderRow}
           >
-            <Ionicons name="wallet-outline" size={18} color={colors.primary} style={{ marginRight: 10 }} />
+            <Ionicons name="options-outline" size={18} color={colors.primary} style={s.rowIcon} />
             <View style={{ flex: 1 }}>
-              <Text style={s.collapsibleTitle}>Configure Budgets ({allCategories.length})</Text>
-              <Text style={s.collapsibleSub}>
-                {budgetsExpanded ? "Set caps per category" : "Tap to expand configuration"}
-              </Text>
+              <Text style={s.rowLabel}>Category Budgets</Text>
+              <Text style={s.rowSubLabel}>Configure caps for spending categories</Text>
             </View>
             <Ionicons
               name={budgetsExpanded ? "chevron-up" : "chevron-down"}
@@ -400,64 +435,56 @@ function ProfileScreen() {
           </TouchableOpacity>
 
           {budgetsExpanded && (
-            <>
-              {allCategories.map((cat, i) => (
-                <View key={cat.key} style={[s.budgetRow, i > 0 && s.budgetDivider]}>
-                  <View style={[s.catIcon, { backgroundColor: cat.color + "18" }]}>
-                    <Ionicons name={cat.icon as "home"} size={17} color={cat.color} />
-                  </View>
-                  <View style={{ flex: 1, marginLeft: 12 }}>
-                    <Text style={s.catLabelText}>{cat.label}</Text>
-                    {(() => {
-                      const spentAmt = getSpentByCategory(cat.key);
-                      if (spentAmt > 0) {
-                        return (
-                          <Text style={s.catSpentLabel}>
-                            ₹{Math.round(spentAmt).toLocaleString("en-IN")} spent this month
-                          </Text>
-                        );
-                      }
-                      return null;
-                    })()}
-                  </View>
-                  <View style={s.limitInputWrap}>
-                    <Text style={s.rupeeSmall}>₹</Text>
-                    <TextInput
-                      testID={`input-budget-${cat.key}`}
-                      style={s.limitInput}
-                      value={limits[cat.key] ?? ""}
-                      onChangeText={(v) => setLimits((prev) => ({ ...prev, [cat.key]: v }))}
-                      placeholder="—"
-                      placeholderTextColor={colors.mutedForeground}
-                      keyboardType="numeric"
-                    />
+            <View style={s.collapsibleContent}>
+              {allCategories.map((cat) => (
+                <View key={cat.key}>
+                  <View style={s.divider} />
+                  <View style={s.budgetRow}>
+                    <View style={[s.catIconBox, { backgroundColor: cat.color + "12" }]}>
+                      <Ionicons name={cat.icon as any} size={15} color={cat.color} />
+                    </View>
+                    <View style={{ flex: 1, marginLeft: 12 }}>
+                      <Text style={s.catLabelText}>{cat.label}</Text>
+                      {(() => {
+                        const spentAmt = getSpentByCategory(cat.key);
+                        if (spentAmt > 0) {
+                          return (
+                            <Text style={s.catSpentText}>
+                              ₹{Math.round(spentAmt).toLocaleString("en-IN")} spent this month
+                            </Text>
+                          );
+                        }
+                        return null;
+                      })()}
+                    </View>
+                    <View style={s.rowLimitInputWrap}>
+                      <Text style={s.limitRupee}>₹</Text>
+                      <TextInput
+                        testID={`input-budget-${cat.key}`}
+                        style={s.limitInputText}
+                        value={limits[cat.key] ?? ""}
+                        onChangeText={(v) => setLimits((prev) => ({ ...prev, [cat.key]: v }))}
+                        onBlur={() => handleBlurCategoryLimit(cat.key, limits[cat.key] ?? "")}
+                        placeholder="—"
+                        placeholderTextColor={colors.mutedForeground}
+                        keyboardType="numeric"
+                      />
+                    </View>
                   </View>
                 </View>
               ))}
-
-              <TouchableOpacity
-                testID="button-save-budgets"
-                onPress={handleSaveBudgets}
-                style={s.saveBtn}
-                activeOpacity={0.85}
-              >
-                <Ionicons name="checkmark-circle-outline" size={18} color="#fff" style={{ marginRight: 6 }} />
-                <Text style={s.saveBtnText}>Save Budgets</Text>
-              </TouchableOpacity>
-            </>
+            </View>
           )}
         </View>
 
-        {/* Preferences Section */}
-        <Text style={[s.sectionLabel, { marginTop: 24 }]}>⚙️ Preferences</Text>
-        <Text style={s.sectionHint}>
-          Customize your application experience.
-        </Text>
+        {/* Group 3: Preferences */}
+        <Text style={s.groupLabel}>Preferences</Text>
         <View style={s.card}>
           <View style={s.toggleRow}>
-            <View style={{ flex: 1, marginRight: 8 }}>
-              <Text style={s.toggleLabel}>Ad-Free Mode</Text>
-              <Text style={s.toggleSub}>Hide all banner, interstitial, and sponsored ad placements</Text>
+            <Ionicons name="eye-off-outline" size={18} color={colors.mutedForeground} style={s.rowIcon} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.rowLabel}>Ad-Free Mode</Text>
+              <Text style={s.rowSubLabel}>Hide banner ads and recommendation cards</Text>
             </View>
             <Switch
               testID="switch-ad-free"
@@ -468,101 +495,106 @@ function ProfileScreen() {
             />
           </View>
 
-
-          <View style={s.reminderDivider} />
+          <View style={s.divider} />
 
           <TouchableOpacity
             testID="button-manage-recurring"
-            style={s.actionBtn}
+            style={s.navRow}
             onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
               router.push("/recurring-bills");
             }}
-            activeOpacity={0.8}
+            activeOpacity={0.7}
           >
-            <View style={[s.actionIcon, { backgroundColor: "#3b82f618" }]}>
-              <Ionicons name="calendar-outline" size={20} color="#3b82f6" />
-            </View>
+            <Ionicons name="calendar-outline" size={18} color={colors.mutedForeground} style={s.rowIcon} />
             <View style={{ flex: 1 }}>
-              <Text style={s.actionTitle}>Recurring Bills & Subscriptions</Text>
-              <Text style={s.actionSub}>View and manage active monthly recurring expenses</Text>
+              <Text style={s.rowLabel}>Recurring Bills</Text>
+              <Text style={s.rowSubLabel}>Manage subscriptions & monthly bills</Text>
             </View>
+            <Ionicons name="chevron-forward" size={16} color={colors.mutedForeground} />
           </TouchableOpacity>
         </View>
 
-        {/* Data Portability Section */}
-        <Text style={[s.sectionLabel, { marginTop: 24 }]}>💾 Data Portability</Text>
-        <Text style={s.sectionHint}>
-          Export or restore your transaction ledger and settings.
-        </Text>
+        {/* Support & Share */}
+        <Text style={s.groupLabel}>Support & Share</Text>
         <View style={s.card}>
-          <View style={s.actionRow}>
-            <TouchableOpacity
-              testID="button-export-csv"
-              style={s.actionBtn}
-              onPress={handleExportCSV}
-              activeOpacity={0.8}
-            >
-              <View style={[s.actionIcon, { backgroundColor: "#10b98118" }]}>
-                <Ionicons name="document-text-outline" size={20} color="#10b981" />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={s.actionTitle}>Export Transactions (CSV)</Text>
-                <Text style={s.actionSub}>Share or save personal transactions as CSV</Text>
-              </View>
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity
+            testID="button-rate-app"
+            style={s.navRow}
+            onPress={handleRateApp}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="star-outline" size={18} color="#f59e0b" style={s.rowIcon} />
+            <Text style={[s.rowLabel, { flex: 1 }]}>Rate Spendly</Text>
+            <Ionicons name="chevron-forward" size={16} color={colors.mutedForeground} />
+          </TouchableOpacity>
 
-          <View style={[s.actionRow, s.budgetDivider]}>
-            <TouchableOpacity
-              testID="button-export-json"
-              style={s.actionBtn}
-              onPress={handleExportJSON}
-              activeOpacity={0.8}
-            >
-              <View style={[s.actionIcon, { backgroundColor: `${colors.primary}18` }]}>
-                <Ionicons name="cloud-download-outline" size={20} color={colors.primary} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={s.actionTitle}>Backup Data (JSON)</Text>
-                <Text style={s.actionSub}>Export full app state for backup</Text>
-              </View>
-            </TouchableOpacity>
-          </View>
+          <View style={s.divider} />
 
-          <View style={[s.actionRow, s.budgetDivider]}>
-            <TouchableOpacity
-              testID="button-restore-json"
-              style={s.actionBtn}
-              onPress={() => setRestoreModalVisible(true)}
-              activeOpacity={0.8}
-            >
-              <View style={[s.actionIcon, { backgroundColor: `${colors.destructive}18` }]}>
-                <Ionicons name="cloud-upload-outline" size={20} color={colors.destructive} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={s.actionTitle}>Restore Backup</Text>
-                <Text style={s.actionSub}>Restore full app state from a backup string</Text>
-              </View>
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity
+            testID="button-share-app"
+            style={s.navRow}
+            onPress={handleShareApp}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="share-social-outline" size={18} color="#10b981" style={s.rowIcon} />
+            <Text style={[s.rowLabel, { flex: 1 }]}>Share with Friends</Text>
+            <Ionicons name="chevron-forward" size={16} color={colors.mutedForeground} />
+          </TouchableOpacity>
+        </View>
 
-          <View style={[s.actionRow, s.budgetDivider]}>
-            <TouchableOpacity
-              testID="button-clear-all-data"
-              style={s.actionBtn}
-              onPress={handleClearAllData}
-              activeOpacity={0.8}
-            >
-              <View style={[s.actionIcon, { backgroundColor: `${colors.destructive}18` }]}>
-                <Ionicons name="trash-outline" size={20} color={colors.destructive} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={[s.actionTitle, { color: colors.destructive }]}>Clear All Data</Text>
-                <Text style={s.actionSub}>Reset all settings and delete all data permanently</Text>
-              </View>
-            </TouchableOpacity>
-          </View>
+        {/* Group 4: Data Management */}
+        <Text style={s.groupLabel}>Data & Portability</Text>
+        <View style={s.card}>
+          <TouchableOpacity
+            testID="button-export-csv"
+            style={s.navRow}
+            onPress={handleExportCSV}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="document-text-outline" size={18} color="#10b981" style={s.rowIcon} />
+            <Text style={[s.rowLabel, { flex: 1 }]}>Export Transactions (CSV)</Text>
+            <Ionicons name="chevron-forward" size={16} color={colors.mutedForeground} />
+          </TouchableOpacity>
+
+          <View style={s.divider} />
+
+          <TouchableOpacity
+            testID="button-export-json"
+            style={s.navRow}
+            onPress={handleExportJSON}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="cloud-download-outline" size={18} color={colors.primary} style={s.rowIcon} />
+            <Text style={[s.rowLabel, { flex: 1 }]}>Backup Data (JSON)</Text>
+            <Ionicons name="chevron-forward" size={16} color={colors.mutedForeground} />
+          </TouchableOpacity>
+
+          <View style={s.divider} />
+
+          <TouchableOpacity
+            testID="button-restore-json"
+            style={s.navRow}
+            onPress={() => setRestoreModalVisible(true)}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="cloud-upload-outline" size={18} color="#3b82f6" style={s.rowIcon} />
+            <Text style={[s.rowLabel, { flex: 1 }]}>Restore Backup</Text>
+            <Ionicons name="chevron-forward" size={16} color={colors.mutedForeground} />
+          </TouchableOpacity>
+
+          <View style={s.divider} />
+
+          <TouchableOpacity
+            testID="button-clear-all-data"
+            style={s.navRow}
+            onPress={handleClearAllData}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="trash-outline" size={18} color={colors.destructive} style={s.rowIcon} />
+            <Text style={[s.rowLabel, { color: colors.destructive, flex: 1 }]}>Clear All Data</Text>
+            <Ionicons name="chevron-forward" size={16} color={colors.mutedForeground} />
+          </TouchableOpacity>
         </View>
 
         <View style={{ height: 20 }} />
@@ -605,11 +637,11 @@ function ProfileScreen() {
             <TouchableOpacity
               testID="button-confirm-restore"
               onPress={handleRestoreBackup}
-              style={[s.saveBtn, { backgroundColor: colors.destructive, marginTop: 16 }]}
+              style={s.restoreBtn}
               activeOpacity={0.85}
             >
               <Ionicons name="cloud-upload-outline" size={18} color="#fff" style={{ marginRight: 6 }} />
-              <Text style={s.saveBtnText}>Restore Now</Text>
+              <Text style={s.restoreBtnText}>Restore Now</Text>
             </TouchableOpacity>
           </View>
         </KeyboardAvoidingView>
@@ -626,289 +658,190 @@ const profileStyles = (
   const isDark = colors.background !== "#f4faf6";
   return StyleSheet.create({
     header: {
-      paddingBottom: 24,
-      paddingHorizontal: 22,
-      borderBottomLeftRadius: isDark ? 28 : 0,
-      borderBottomRightRadius: isDark ? 28 : 0,
-    },
-    backBtn: { marginBottom: 14 },
-    backBtnInner: {
-      width: 40,
-      height: 40,
-      borderRadius: 12,
-      backgroundColor: isDark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.06)",
-      alignItems: "center",
-      justifyContent: "center",
-    },
-    headerTitle: { fontSize: 26, fontFamily: "Inter_700Bold", color: isDark ? "#fff" : colors.foreground },
-    headerSub: { fontSize: 13, fontFamily: "Inter_400Regular", color: isDark ? "rgba(255,255,255,0.65)" : colors.mutedForeground, marginTop: 4 },
-    scroll: { padding: 18, paddingTop: 22 },
-    sectionLabel: {
-      fontSize: 12,
-      fontFamily: "Inter_700Bold",
-      color: colors.mutedForeground,
-      textTransform: "uppercase",
-      letterSpacing: 0.9,
-      marginBottom: 9,
-    },
-    sectionHint: {
-      fontSize: 12,
-      fontFamily: "Inter_400Regular",
-      color: colors.mutedForeground,
-      marginBottom: 10,
-      lineHeight: 18,
-    },
-    card: {
-      backgroundColor: colors.card,
-      borderRadius: 16,
-      padding: 18,
-      borderWidth: 1,
-      borderColor: colors.border,
-    },
-    fieldLabel: {
-      fontSize: 13,
-      fontFamily: "Inter_600SemiBold",
-      color: colors.foreground,
-      marginBottom: 8,
-    },
-    inputWrap: {
-      flexDirection: "row",
-      alignItems: "center",
-      borderWidth: 1.5,
-      borderColor: colors.border,
-      borderRadius: 12,
-      paddingHorizontal: 14,
-      height: 50,
-      backgroundColor: colors.background,
-    },
-    input: { flex: 1, fontSize: 15, fontFamily: "Inter_400Regular", color: colors.foreground },
-    rupee: { fontSize: 17, fontFamily: "Inter_600SemiBold", marginRight: 8 },
-    saveBtn: {
-      marginTop: 18,
-      backgroundColor: colors.primary,
-      borderRadius: 12,
-      height: 48,
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "center",
-    },
-    saveBtnText: { color: "#fff", fontSize: 15, fontFamily: "Inter_600SemiBold" },
-    catIcon: { width: 36, height: 36, borderRadius: 10, alignItems: "center", justifyContent: "center" },
-    catLabel: { flex: 1, fontSize: 14, fontFamily: "Inter_500Medium", color: colors.foreground, marginLeft: 12 },
-    catLabelText: { fontSize: 14, fontFamily: "Inter_500Medium", color: colors.foreground },
-    catSpentLabel: { fontSize: 11, fontFamily: "Inter_400Regular", color: colors.mutedForeground, marginTop: 2 },
-    budgetRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      paddingVertical: 12,
-    },
-    budgetDivider: { borderTopWidth: 1, borderTopColor: colors.border },
-    limitInputWrap: {
-      flexDirection: "row",
-      alignItems: "center",
-      borderWidth: 1.5,
-      borderColor: colors.border,
-      borderRadius: 8,
-      paddingHorizontal: 8,
-      height: 36,
-      backgroundColor: colors.background,
-      width: 100,
-    },
-    rupeeSmall: {
-      fontSize: 13,
-      fontFamily: "Inter_600SemiBold",
-      color: colors.mutedForeground,
-      marginRight: 4,
-    },
-    limitInput: {
-      flex: 1,
-      fontSize: 13,
-      fontFamily: "Inter_600SemiBold",
-      color: colors.foreground,
-      padding: 0,
-    },
-    unsupportedWarning: {
-      flexDirection: "row",
-      gap: 8,
-      backgroundColor: "#fff7ed",
-      borderColor: "#ffedd5",
-      borderWidth: 1,
-      padding: 12,
-      borderRadius: 10,
-      marginBottom: 14,
-    },
-    unsupportedWarningText: {
-      flex: 1,
-      fontSize: 11,
-      fontFamily: "Inter_400Regular",
-      color: "#c2410c",
-      lineHeight: 15,
-    },
-    reminderToggleRow: {
       flexDirection: "row",
       alignItems: "center",
       justifyContent: "space-between",
+      paddingHorizontal: 20,
+      paddingBottom: 14,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.border,
+      backgroundColor: colors.card,
     },
-    reminderToggleLeft: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 12,
+    backBtn: {
+      padding: 4,
+    },
+    headerTitle: {
+      fontSize: 17,
+      fontFamily: "Inter_700Bold",
+      color: colors.foreground,
+      textAlign: "center",
       flex: 1,
-      marginRight: 10,
     },
-    reminderIcon: {
-      width: 36,
-      height: 36,
-      borderRadius: 10,
+    scroll: {
+      padding: 16,
+      paddingTop: 20,
+    },
+    avatarZone: {
+      alignItems: "center",
+      marginBottom: 24,
+    },
+    avatarCircle: {
+      width: 72,
+      height: 72,
+      borderRadius: 36,
       alignItems: "center",
       justifyContent: "center",
+      marginBottom: 12,
     },
-    reminderToggleLabel: {
+    avatarInitial: {
+      fontSize: 28,
+      fontFamily: "Inter_700Bold",
+    },
+    avatarName: {
+      fontSize: 20,
+      fontFamily: "Inter_700Bold",
+      color: colors.foreground,
+      marginBottom: 4,
+    },
+    avatarBudget: {
+      fontSize: 13,
+      fontFamily: "Inter_400Regular",
+      color: colors.mutedForeground,
+    },
+    groupLabel: {
+      fontSize: 11,
+      fontFamily: "Inter_700Bold",
+      color: colors.mutedForeground,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      marginBottom: 8,
+      marginLeft: 4,
+    },
+    card: {
+      backgroundColor: colors.card,
+      borderRadius: 14,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      overflow: "hidden",
+      marginBottom: 20,
+    },
+    divider: {
+      height: StyleSheet.hairlineWidth,
+      backgroundColor: colors.border,
+      marginLeft: 48,
+    },
+    rowIcon: {
+      marginRight: 12,
+    },
+    rowLabel: {
       fontSize: 14,
       fontFamily: "Inter_600SemiBold",
       color: colors.foreground,
     },
-    reminderToggleSub: {
+    rowSubLabel: {
       fontSize: 11,
+      fontFamily: "Inter_400Regular",
+      color: colors.mutedForeground,
+      marginTop: 2,
+    },
+    inputRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingHorizontal: 16,
+      height: 48,
+    },
+    rowInput: {
+      flex: 1,
+      fontSize: 14,
+      fontFamily: "Inter_400Regular",
+      color: colors.foreground,
+      textAlign: "right",
+      padding: 0,
+      marginLeft: 12,
+    },
+    salaryInput: {
+      fontFamily: "Inter_600SemiBold",
+    },
+    inputRupee: {
+      fontSize: 14,
+      fontFamily: "Inter_600SemiBold",
+      color: colors.foreground,
+      marginLeft: "auto",
+    },
+    errorMargin: {
+      marginTop: -16,
+      marginBottom: 16,
+      marginLeft: 16,
+    },
+    collapsibleHeaderRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingHorizontal: 16,
+      paddingVertical: 12,
+    },
+    collapsibleContent: {
+      backgroundColor: colors.background + "10",
+    },
+    budgetRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingHorizontal: 16,
+      paddingVertical: 10,
+    },
+    catIconBox: {
+      width: 28,
+      height: 28,
+      borderRadius: 8,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    catLabelText: {
+      fontSize: 13,
+      fontFamily: "Inter_500Medium",
+      color: colors.foreground,
+    },
+    catSpentText: {
+      fontSize: 10,
       fontFamily: "Inter_400Regular",
       color: colors.mutedForeground,
       marginTop: 1,
     },
-    reminderDivider: {
-      height: 1,
-      backgroundColor: colors.border,
-      marginVertical: 14,
-    },
-    reminderSubLabel: {
-      fontSize: 12,
-      fontFamily: "Inter_600SemiBold",
-      color: colors.foreground,
-      marginBottom: 8,
-    },
-    countRow: {
+    rowLimitInputWrap: {
       flexDirection: "row",
-      gap: 8,
-      marginBottom: 14,
-    },
-    countChip: {
-      flex: 1,
-      borderWidth: 1.5,
-      borderColor: colors.border,
+      alignItems: "center",
       backgroundColor: colors.background,
-      borderRadius: 10,
-      height: 36,
-      alignItems: "center",
-      justifyContent: "center",
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 8,
+      paddingHorizontal: 8,
+      height: 30,
+      width: 90,
+      marginLeft: 12,
     },
-    countChipText: {
+    limitRupee: {
+      fontSize: 11,
+      fontFamily: "Inter_600SemiBold",
+      color: colors.mutedForeground,
+      marginRight: 2,
+    },
+    limitInputText: {
+      flex: 1,
       fontSize: 12,
       fontFamily: "Inter_600SemiBold",
       color: colors.foreground,
-    },
-    timeRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "space-between",
-      paddingVertical: 10,
-    },
-    timeLabel: {
-      fontSize: 13,
-      fontFamily: "Inter_500Medium",
-      color: colors.mutedForeground,
-    },
-    timeBtn: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 6,
-      borderWidth: 1.5,
-      borderColor: colors.primary + "30",
-      backgroundColor: colors.primary + "0c",
-      paddingHorizontal: 12,
-      paddingVertical: 6,
-      borderRadius: 10,
-    },
-    timeBtnText: {
-      fontSize: 12,
-      fontFamily: "Inter_600SemiBold",
-      color: colors.primary,
+      padding: 0,
     },
     toggleRow: {
       flexDirection: "row",
       alignItems: "center",
-      justifyContent: "space-between",
-      paddingVertical: 4,
+      paddingHorizontal: 16,
+      paddingVertical: 10,
     },
-    toggleLabel: {
-      fontSize: 14,
-      fontFamily: "Inter_600SemiBold",
-      color: colors.foreground,
-    },
-    toggleSub: {
-      fontSize: 11,
-      fontFamily: "Inter_400Regular",
-      color: colors.mutedForeground,
-      marginTop: 2,
-    },
-    emptyCustomCats: {
-      paddingVertical: 20,
-      alignItems: "center",
-      justifyContent: "center",
-    },
-    emptyCustomCatsText: {
-      fontSize: 14,
-      fontFamily: "Inter_600SemiBold",
-      color: colors.foreground,
-      textAlign: "center",
-    },
-    emptyCustomCatsSub: {
-      fontSize: 12,
-      fontFamily: "Inter_400Regular",
-      color: colors.mutedForeground,
-      marginTop: 4,
-      textAlign: "center",
-      lineHeight: 18,
-      paddingHorizontal: 12,
-    },
-    customCatRow: {
+    navRow: {
       flexDirection: "row",
       alignItems: "center",
+      paddingHorizontal: 16,
       paddingVertical: 12,
-      justifyContent: "space-between",
-    },
-    trashBtn: {
-      width: 32,
-      height: 32,
-      borderRadius: 16,
-      backgroundColor: colors.destructive + "12",
-      alignItems: "center",
-      justifyContent: "center",
-      marginLeft: "auto",
-    },
-    actionRow: {
-      paddingVertical: 12,
-    },
-    actionBtn: {
-      flexDirection: "row",
-      alignItems: "center",
-    },
-    actionIcon: {
-      width: 40,
-      height: 40,
-      borderRadius: 10,
-      alignItems: "center",
-      justifyContent: "center",
-      marginRight: 12,
-    },
-    actionTitle: {
-      fontSize: 14,
-      fontFamily: "Inter_600SemiBold",
-      color: colors.foreground,
-    },
-    actionSub: {
-      fontSize: 11,
-      fontFamily: "Inter_400Regular",
-      color: colors.mutedForeground,
-      marginTop: 2,
     },
     restoreModalContainer: {
       flex: 1,
@@ -920,7 +853,7 @@ const profileStyles = (
       borderTopLeftRadius: 24,
       borderTopRightRadius: 24,
       padding: 24,
-      borderWidth: 1,
+      borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.border,
       maxHeight: "80%",
     },
@@ -946,7 +879,7 @@ const profileStyles = (
       marginBottom: 16,
     },
     restoreInput: {
-      borderWidth: 1.5,
+      borderWidth: 1,
       borderColor: colors.border,
       borderRadius: 12,
       padding: 12,
@@ -956,21 +889,19 @@ const profileStyles = (
       fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
       fontSize: 12,
     },
-    collapsibleHeader: {
+    restoreBtn: {
+      marginTop: 18,
+      backgroundColor: colors.destructive,
+      borderRadius: 12,
+      height: 48,
       flexDirection: "row",
       alignItems: "center",
-      paddingVertical: 4,
+      justifyContent: "center",
     },
-    collapsibleTitle: {
-      fontSize: 14,
-      fontFamily: "Inter_700Bold",
-      color: colors.foreground,
-    },
-    collapsibleSub: {
-      fontSize: 11,
-      fontFamily: "Inter_400Regular",
-      color: colors.mutedForeground,
-      marginTop: 2,
+    restoreBtnText: {
+      color: "#fff",
+      fontSize: 15,
+      fontFamily: "Inter_600SemiBold",
     },
   });
 };
