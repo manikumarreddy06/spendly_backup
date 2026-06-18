@@ -33,6 +33,7 @@ import {
   Expense,
   SplitGroup,
   parseGroupName,
+  useCurrency,
 } from "@/context/AppContext";
 import { isSameMember, getExpenseMemberConsumptionShare } from "@/lib/split";
 import { useColors } from "@/hooks/useColors";
@@ -66,6 +67,7 @@ type ActivityItem = {
   bg: string;
   route: string;
   sortDate: string;
+  isRecurring?: boolean;
 };
 
 const GREEN = "#18633f";
@@ -118,6 +120,13 @@ function buildRecentActivities(
 
   const personal: ActivityItem[] = monthExpenses.map((exp) => {
     const meta = resolveExpenseMeta(exp.category, customCategories, colors);
+    const custom = customCategories.find((c) => c.id === exp.category);
+    const hasActiveRecurringInCat = expenses.some(
+      (e) => e.recurring === "monthly" && !e.recurringGroupId && e.category === exp.category
+    );
+    const matchesCommonRecurringName = ["netflix", "spotify", "youtube premium", "rent", "icloud"].some(
+      (name) => (exp.description || "").toLowerCase().includes(name)
+    );
     return {
       id: exp.id,
       title: exp.description || meta.label,
@@ -128,6 +137,7 @@ function buildRecentActivities(
       bg: meta.bg,
       route: "/(tabs)/history",
       sortDate: exp.date,
+      isRecurring: exp.recurring === "monthly" || !!exp.recurringGroupId || !!custom?.isRecurring || hasActiveRecurringInCat || matchesCommonRecurringName,
     };
   });
 
@@ -207,6 +217,7 @@ function HomeScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const isFocused = useIsFocused();
+  const currency = useCurrency();
   const {
     profile,
     expenses,
@@ -216,6 +227,9 @@ function HomeScreen() {
     getCurrentMonthTotal,
     getSpentByCategory,
     budgetLimits,
+    pendingTransactionCount,
+    detectionSettings,
+    syncDetectedTransactions,
   } = useApp();
 
   const salary = profile?.salary ?? 0;
@@ -291,6 +305,41 @@ function HomeScreen() {
     };
   }, [reminderModalVisible, isFocused]);
 
+  // Sync detected transactions when screen is focused
+  useEffect(() => {
+    if (isFocused && Platform.OS === "android") {
+      syncDetectedTransactions();
+    }
+  }, [isFocused]);
+
+  // Pulsing animation for smart detection pending transactions
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    let animation: Animated.CompositeAnimation | null = null;
+    if (Platform.OS === "android" && pendingTransactionCount > 0) {
+      animation = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 1.4,
+            duration: 1000,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 1000,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+      animation.start();
+    } else {
+      pulseAnim.setValue(1);
+    }
+    return () => {
+      if (animation) animation.stop();
+    };
+  }, [pendingTransactionCount]);
+
   useEffect(() => {
     let animation: Animated.CompositeAnimation | null = null;
     let timeoutId: any = null;
@@ -347,17 +396,17 @@ function HomeScreen() {
     if (tourVisible) {
       // Give a tiny timeout for elements to fully render and calculate layouts
       const timer = setTimeout(() => {
-        if (notifRef.current && typeof notifRef.current.measure === 'function') {
-          notifRef.current.measure((x: any, y: any, w: any, h: any, pageX: any, pageY: any) => {
+        if (notifRef.current && typeof notifRef.current.measureInWindow === 'function') {
+          notifRef.current.measureInWindow((x: number, y: number, w: number, h: number) => {
             if (w > 0 && h > 0) {
-              setNotifLayout({ x: pageX, y: pageY, w, h });
+              setNotifLayout({ x, y, w, h });
             }
           });
         }
-        if (budgetRef.current && typeof budgetRef.current.measure === 'function') {
-          budgetRef.current.measure((x: any, y: any, w: any, h: any, pageX: any, pageY: any) => {
+        if (budgetRef.current && typeof budgetRef.current.measureInWindow === 'function') {
+          budgetRef.current.measureInWindow((x: number, y: number, w: number, h: number) => {
             if (w > 0 && h > 0) {
-              setBudgetLayout({ x: pageX, y: pageY, w, h });
+              setBudgetLayout({ x, y, w, h });
             }
           });
         }
@@ -561,8 +610,71 @@ function HomeScreen() {
             isDark={isDark}
             primaryColor={colors.primary}
             primaryDarkColor={isDark ? "#065f46" : "#134830"}
+            currency={currency}
           />
         </Animated.View>
+
+        {/* Smart Transaction Detection Card (Android Only) */}
+        {Platform.OS === "android" && (pendingTransactionCount > 0 || detectionSettings?.enabled) && (
+          <Animated.View style={{ opacity: bodyOpacity, transform: [{ translateY: bodyTranslateY }] }}>
+            <TouchableOpacity
+              style={s.detectionCard}
+              activeOpacity={0.8}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+                router.push("/pending-transactions");
+              }}
+            >
+              <LinearGradient
+                colors={
+                  pendingTransactionCount > 0
+                    ? [colors.primary + "12", colors.primary + "06"]
+                    : [colors.border + "40", colors.border + "10"]
+                }
+                style={s.detectionCardBg}
+              />
+              <View style={s.detectionCardContent}>
+                <View style={[
+                  s.detectionIconBox,
+                  { backgroundColor: pendingTransactionCount > 0 ? colors.primary + "20" : colors.muted }
+                ]}>
+                  <Ionicons
+                    name={pendingTransactionCount > 0 ? "wallet-outline" : "scan-outline"}
+                    size={22}
+                    color={pendingTransactionCount > 0 ? colors.primary : colors.mutedForeground}
+                  />
+                  {pendingTransactionCount > 0 && (
+                    <View style={s.detectionPulseWrap}>
+                      <Animated.View style={[
+                        s.detectionPulseOuter,
+                        {
+                          backgroundColor: colors.primary + "40",
+                          transform: [{ scale: pulseAnim }],
+                        }
+                      ]} />
+                      <View style={[s.detectionPulseInner, { backgroundColor: colors.primary }]} />
+                    </View>
+                  )}
+                </View>
+                
+                <View style={s.detectionTextSection}>
+                  <Text style={s.detectionTitle}>
+                    {pendingTransactionCount > 0
+                      ? `${pendingTransactionCount} Transaction${pendingTransactionCount > 1 ? "s" : ""} Pending`
+                      : "Smart Detection Active"}
+                  </Text>
+                  <Text style={s.detectionSubtitle}>
+                    {pendingTransactionCount > 0
+                      ? "Tap to review and approve to ledger"
+                      : "Scanning notifications for bank & UPI alerts"}
+                  </Text>
+                </View>
+
+                <Ionicons name="chevron-forward" size={18} color={colors.mutedForeground} style={s.detectionChevron} />
+              </View>
+            </TouchableOpacity>
+          </Animated.View>
+        )}
 
         <Animated.View style={{ opacity: bodyOpacity, transform: [{ translateY: bodyTranslateY }] }}>
           {/* Monthly Insight Hero Section */}
@@ -575,14 +687,14 @@ function HomeScreen() {
             {spent === 0
               ? "Your budget for this month is fresh and ready. Let's make it financially great! ✨"
               : budgetLimit === 0
-              ? `You have spent ₹${fmt(spent)} this month. Consider setting a monthly budget limit in your profile to track against.`
+              ? `You have spent ${currency}${fmt(spent)} this month. Consider setting a monthly budget limit in your profile to track against.`
               : spentPct < 50
               ? `Looking great! You've used only ${spentPct}% of your monthly budget. Calm, steady, and on track.`
               : spentPct <= 80
-              ? `Pacing fine. You've spent ₹${fmt(spent)} so far. Your average daily spend is ₹${fmt(Math.max(1, spent / new Date().getDate()))}. Keep up the steady spending.`
+              ? `Pacing fine. You've spent ${currency}${fmt(spent)} so far. Your average daily spend is ${currency}${fmt(Math.max(1, spent / new Date().getDate()))}. Keep up the steady spending.`
               : spentPct < 100
               ? `Note: You've used ${spentPct}% of your budget. With ${Math.max(1, 30 - new Date().getDate())} days remaining, consider slowing down your non-essential spending.`
-              : `Budget cap reached. You have exceeded your limit by ₹${fmt(spent - budgetLimit)}. Let's pause and keep transactions essential.`}
+              : `Budget cap reached. You have exceeded your limit by ${currency}${fmt(spent - budgetLimit)}. Let's pause and keep transactions essential.`}
           </Text>
         </View>
 
@@ -603,7 +715,7 @@ function HomeScreen() {
                 <TouchableOpacity
                   key={cat.key}
                   testID={`button-category-${cat.key}`}
-                  accessibilityLabel={`${cat.label} category, total spent ₹${fmt(catSpent)}`}
+                  accessibilityLabel={`${cat.label} category, total spent ${currency}${fmt(catSpent)}`}
                   accessibilityRole="button"
                   style={s.catTile}
                   activeOpacity={0.75}
@@ -613,7 +725,7 @@ function HomeScreen() {
                     <CategoryIcon name={cat.icon} color={cat.color} size={22} />
                   </View>
                   <Text style={s.catLabel}>{cat.label}</Text>
-                  <Text style={[s.catAmount, { color: cat.color }]}>₹{fmt(catSpent)}</Text>
+                  <Text style={[s.catAmount, { color: cat.color }]}>{currency}{fmt(catSpent)}</Text>
                   {limit > 0 && (
                     <View style={s.miniProgressBarContainer}>
                       <View
@@ -739,9 +851,17 @@ function HomeScreen() {
                     <Ionicons name={act.icon as any} size={18} color={act.color} />
                   </View>
                   <View style={s.activityBody}>
-                    <Text style={s.activityTitle} numberOfLines={1}>
-                      {act.title}
-                    </Text>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                      <Text style={s.activityTitle} numberOfLines={1}>
+                        {act.title}
+                      </Text>
+                      {act.isRecurring && (
+                        <View style={s.miniRecurringBadge}>
+                          <Ionicons name="repeat" size={10} color={colors.primary} />
+                          <Text style={s.miniRecurringBadgeText}>Bill</Text>
+                        </View>
+                      )}
+                    </View>
                     <Text style={s.activitySub}>{act.subtitle}</Text>
                   </View>
                   <View style={s.activityRight}>
@@ -751,7 +871,7 @@ function HomeScreen() {
                         act.positive ? { color: "#10b981" } : { color: "#ef4444" },
                       ]}
                     >
-                      {act.positive ? "+" : "-"}₹{fmt(act.amount)}
+                      {act.positive ? "+" : "-"}{currency}{fmt(act.amount)}
                     </Text>
                     <Ionicons name="chevron-forward" size={16} color="#d1d5db" />
                   </View>
@@ -1265,8 +1385,87 @@ function createStyles(colors: ReturnType<typeof useColors>, topPad: number, tabB
       borderWidth: 1.5,
       borderColor: colors.card,
     },
-
-
+    miniRecurringBadge: {
+      flexDirection: "row",
+      alignItems: "center",
+      backgroundColor: colors.primary + "10",
+      paddingHorizontal: 5,
+      paddingVertical: 1.5,
+      borderRadius: 6,
+      borderWidth: 0.5,
+      borderColor: colors.primary + "25",
+      gap: 2,
+    },
+    miniRecurringBadgeText: {
+      fontSize: 9,
+      fontFamily: "Inter_600SemiBold",
+      color: colors.primary,
+    },
+    detectionCard: {
+      position: "relative",
+      borderRadius: 20,
+      marginHorizontal: 20,
+      marginBottom: 20,
+      borderWidth: 1,
+      borderColor: colors.border,
+      overflow: "hidden",
+    },
+    detectionCardBg: {
+      ...StyleSheet.absoluteFillObject,
+    },
+    detectionCardContent: {
+      flexDirection: "row",
+      alignItems: "center",
+      padding: 16,
+    },
+    detectionIconBox: {
+      width: 44,
+      height: 44,
+      borderRadius: 14,
+      alignItems: "center",
+      justifyContent: "center",
+      position: "relative",
+    },
+    detectionPulseWrap: {
+      position: "absolute",
+      top: -2,
+      right: -2,
+      width: 14,
+      height: 14,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    detectionPulseOuter: {
+      position: "absolute",
+      width: 14,
+      height: 14,
+      borderRadius: 7,
+    },
+    detectionPulseInner: {
+      width: 8,
+      height: 8,
+      borderRadius: 4,
+      borderWidth: 1.5,
+      borderColor: colors.card,
+    },
+    detectionTextSection: {
+      flex: 1,
+      marginLeft: 12,
+    },
+    detectionTitle: {
+      fontSize: 14,
+      fontFamily: "Inter_700Bold",
+      color: colors.foreground,
+    },
+    detectionSubtitle: {
+      fontSize: 11,
+      fontFamily: "Inter_500Medium",
+      color: colors.mutedForeground,
+      marginTop: 2,
+    },
+    detectionChevron: {
+      marginLeft: 8,
+    },
   });
 }
 

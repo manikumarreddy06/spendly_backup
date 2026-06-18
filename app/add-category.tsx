@@ -11,13 +11,14 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useApp } from "@/context/AppContext";
+import { useApp, useCurrency } from "@/context/AppContext";
 import { useColors } from "@/hooks/useColors";
 
 const GREEN = "#18633f";
@@ -73,6 +74,7 @@ export default function AddCategoryScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { addCustomCategory, setBudgetLimit, customCategories, deleteCustomCategory } = useApp();
+  const currency = useCurrency();
 
   const handleDeleteCategory = (id: string, name: string) => {
     Alert.alert(
@@ -105,6 +107,7 @@ export default function AddCategoryScreen() {
   const [selectedIcon, setSelectedIcon] = useState(ICONS[0].name);
   const [selectedColor, setSelectedColor] = useState(PALETTE[0]);
   const [monthlyLimit, setMonthlyLimit] = useState("");
+  const [isRecurring, setIsRecurring] = useState(false);
 
   const limitNum = parseInt(monthlyLimit.replace(/,/g, ""), 10);
   const hasLimit = !isNaN(limitNum) && limitNum > 0;
@@ -115,7 +118,7 @@ export default function AddCategoryScreen() {
       return;
     }
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    const id = await addCustomCategory(name.trim(), selectedColor, selectedIcon);
+    const id = await addCustomCategory(name.trim(), selectedColor, selectedIcon, isRecurring);
     if (hasLimit) {
       await setBudgetLimit(id, limitNum);
     }
@@ -238,11 +241,25 @@ export default function AddCategoryScreen() {
             })}
           </View>
 
+          <View style={s.toggleRow}>
+            <View style={s.toggleInfo}>
+              <Text style={s.toggleLabel}>Monthly Subscription / Bill</Text>
+              <Text style={s.toggleDesc}>Auto-toggles recurring payments like Rent, Netflix, Spotify</Text>
+            </View>
+            <Switch
+              testID="switch-category-recurring"
+              value={isRecurring}
+              onValueChange={setIsRecurring}
+              trackColor={{ false: colors.border, true: colors.primary }}
+              thumbColor={Platform.OS === "android" ? "#fff" : undefined}
+            />
+          </View>
+
           <Text style={s.label}>
             Set Monthly Limit <Text style={s.labelOptional}>(Optional)</Text>
           </Text>
           <View style={s.inputWrap}>
-            <Text style={s.rupeePrefix}>₹</Text>
+            <Text style={s.rupeePrefix}>{currency}</Text>
             <TextInput
               testID="input-monthly-limit"
               style={s.input}
@@ -286,6 +303,12 @@ export default function AddCategoryScreen() {
                       <CategoryIcon name={cat.icon} color={cat.color} size={18} />
                     </View>
                     <Text style={s.customCatName}>{cat.name}</Text>
+                    {cat.isRecurring && (
+                      <View style={s.recurringBadge}>
+                        <Ionicons name="repeat" size={11} color={colors.primary} style={{ marginRight: 3 }} />
+                        <Text style={s.recurringBadgeText}>Monthly</Text>
+                      </View>
+                    )}
                     <TouchableOpacity
                       onPress={() => handleDeleteCategory(cat.id, cat.name)}
                       style={s.trashBtn}
@@ -620,6 +643,48 @@ function createStyles(colors: ReturnType<typeof useColors>, topPad: number, bott
       alignItems: "center",
       justifyContent: "center",
       marginLeft: "auto",
+    },
+    toggleRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginBottom: 20,
+      backgroundColor: colors.background,
+      borderWidth: 1.5,
+      borderColor: colors.border,
+      borderRadius: 14,
+      padding: 14,
+    },
+    toggleInfo: {
+      flex: 1,
+      marginRight: 12,
+    },
+    toggleLabel: {
+      fontSize: 15,
+      fontFamily: "Inter_700Bold",
+      color: colors.foreground,
+    },
+    toggleDesc: {
+      fontSize: 12,
+      fontFamily: "Inter_400Regular",
+      color: colors.mutedForeground,
+      marginTop: 2,
+    },
+    recurringBadge: {
+      flexDirection: "row",
+      alignItems: "center",
+      backgroundColor: colors.primary + "12",
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 12,
+      marginRight: 12,
+      borderWidth: 1,
+      borderColor: colors.primary + "30",
+    },
+    recurringBadgeText: {
+      fontSize: 11,
+      fontFamily: "Inter_600SemiBold",
+      color: colors.primary,
     },
   });
 }

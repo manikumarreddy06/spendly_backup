@@ -22,11 +22,10 @@ import {
 } from 'react-native';
 import { InlineError } from '@/components/InlineError';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useApp, ExpenseCategory, CustomCategory } from '@/context/AppContext';
+import { useApp, ExpenseCategory, CustomCategory, useCurrency } from '@/context/AppContext';
 import { useColors } from '@/hooks/useColors';
 import { getLastExpenseCategory, setLastExpenseCategory, getRecentCategories } from '@/lib/uxPrefs';
 import { evaluateMathExpression } from '@/lib/split';
-import { adsManager } from '@/lib/ads';
 import { BUILTIN_CATEGORIES } from '@/constants/categories';
 
 
@@ -37,6 +36,7 @@ type CategoryItem = {
   icon: string;
   color: string;
   bg: string;
+  isRecurring?: boolean;
 };
 
 function CatIcon({ icon, color, size = 20 }: { icon: string; color: string; size?: number }) {
@@ -50,6 +50,7 @@ function customToItem(c: CustomCategory): CategoryItem {
     icon: c.icon,
     color: c.color,
     bg: c.color + '18',
+    isRecurring: c.isRecurring,
   };
 }
 
@@ -110,7 +111,8 @@ export default function QuickLogScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { addExpense, customCategories = [] } = useApp();
+  const currency = useCurrency();
+  const { addExpense, expenses = [], customCategories = [] } = useApp();
   const amountRef = useRef<TextInput>(null);
 
   // Form state
@@ -118,6 +120,10 @@ export default function QuickLogScreen() {
   const [selectedCategory, setSelectedCategory] = useState('food');
   const [description, setDescription] = useState('');
   const [isRecurring, setIsRecurring] = useState(false);
+
+  const hasActiveRecurringBill = useMemo(() => {
+    return expenses.some(e => e.recurring === "monthly" && !e.recurringGroupId && e.category === selectedCategory);
+  }, [expenses, selectedCategory]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [recentKeys, setRecentKeys] = useState<string[]>([]);
@@ -169,14 +175,24 @@ export default function QuickLogScreen() {
       if (!mounted) return;
       setRecentKeys(recents);
 
-      const list = [
-        ...BUILTIN_CATEGORIES,
+      const list: CategoryItem[] = [
+        ...BUILTIN_CATEGORIES.map(c => ({
+          ...c,
+          bg: colors.background !== '#f4faf6' ? c.color + '25' : c.bg,
+        })),
         ...(customCategories || []).map(customToItem),
       ];
       const nextCategory = list.some((cat) => cat.key === category)
         ? category
         : list[0]?.key || 'food';
       setSelectedCategory(nextCategory);
+
+      const matchingCat = list.find((cat) => cat.key === nextCategory);
+      const isCatRecur = (matchingCat && !!matchingCat.isRecurring) || expenses.some(
+        (e) => e.recurring === "monthly" && !e.recurringGroupId && e.category === nextCategory
+      );
+      setIsRecurring(isCatRecur);
+
       setHasInitializedCategory(true);
     });
 
@@ -193,12 +209,20 @@ export default function QuickLogScreen() {
     if (hasInitializedCategory || !customCategories || customCategories.length === 0) return;
 
     getLastExpenseCategory('food').then((category) => {
-      const list = [
-        ...BUILTIN_CATEGORIES,
+      const list: CategoryItem[] = [
+        ...BUILTIN_CATEGORIES.map(c => ({
+          ...c,
+          bg: colors.background !== '#f4faf6' ? c.color + '25' : c.bg,
+        })),
         ...customCategories.map(customToItem),
       ];
       if (list.some((cat) => cat.key === category)) {
         setSelectedCategory(category);
+        const matchingCat = list.find((cat) => cat.key === category);
+        const isCatRecur = (matchingCat && !!matchingCat.isRecurring) || expenses.some(
+          (e) => e.recurring === "monthly" && !e.recurringGroupId && e.category === category
+        );
+        setIsRecurring(isCatRecur);
         setHasInitializedCategory(true);
       }
     });
@@ -253,9 +277,6 @@ export default function QuickLogScreen() {
             Animated.timing(slideY, { toValue: 400, duration: 200, easing: Easing.in(Easing.ease), useNativeDriver: true }),
           ]).start(() => {
             router.back();
-            setTimeout(() => {
-              adsManager.showAdIfReady();
-            }, 100);
           });
         }, 900);
       });
@@ -306,7 +327,7 @@ export default function QuickLogScreen() {
               </View>
               <Text style={s.amountCatLabel}>{activeCat.label}</Text>
               <View style={s.amountDivider} />
-              <Text style={s.rupee}>₹</Text>
+              <Text style={s.rupee}>{currency}</Text>
               <TextInput
                 ref={amountRef}
                 style={s.amountInput}
@@ -338,7 +359,7 @@ export default function QuickLogScreen() {
                   return (
                     <View style={s.mathPreviewContainer}>
                       <Ionicons name="calculator-outline" size={12} color={colors.primary} />
-                      <Text style={s.mathPreviewText}>Total: ₹{Math.round(resolved).toLocaleString("en-IN")}</Text>
+                      <Text style={s.mathPreviewText}>Total: {currency}{Math.round(resolved).toLocaleString()}</Text>
                     </View>
                   );
                 }
@@ -372,6 +393,10 @@ export default function QuickLogScreen() {
                     ]}
                     onPress={() => {
                       setSelectedCategory(cat.key);
+                      const isCatRecur = !!cat.isRecurring || expenses.some(
+                        (e) => e.recurring === "monthly" && !e.recurringGroupId && e.category === cat.key
+                      );
+                      setIsRecurring(isCatRecur);
                       Haptics.selectionAsync();
                     }}
                     activeOpacity={0.75}
@@ -380,6 +405,14 @@ export default function QuickLogScreen() {
                     <Text style={[s.catChipLabel, { color: active ? '#fff' : cat.color }]}>
                       {cat.label}
                     </Text>
+                    {cat.isRecurring && (
+                      <Ionicons
+                        name="repeat"
+                        size={12}
+                        color={active ? '#fff' : cat.color}
+                        style={{ marginLeft: 3 }}
+                      />
+                    )}
                   </TouchableOpacity>
                 );
               })}
@@ -398,6 +431,11 @@ export default function QuickLogScreen() {
                   const matched = classifyText(text, customCategories);
                   if (matched && matched !== selectedCategory) {
                     setSelectedCategory(matched);
+                    const matchingCat = allCategories.find((c) => c.key === matched);
+                    const isCatRecur = (matchingCat && !!matchingCat.isRecurring) || expenses.some(
+                      (e) => e.recurring === "monthly" && !e.recurringGroupId && e.category === matched
+                    );
+                    setIsRecurring(isCatRecur);
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
                   }
                 }}
@@ -422,6 +460,15 @@ export default function QuickLogScreen() {
                 thumbColor={isRecurring ? colors.primary : colors.mutedForeground}
               />
             </View>
+
+            {isRecurring && hasActiveRecurringBill && (
+              <View style={s.recurringAlert}>
+                <Ionicons name="information-circle" size={16} color={colors.primary} />
+                <Text style={s.recurringAlertText}>
+                  This category already has an active recurring bill setup. It logs automatically every month.
+                </Text>
+              </View>
+            )}
 
             {/* Save Button */}
             <TouchableOpacity
@@ -713,6 +760,25 @@ function styles(
       fontSize: 12,
       fontFamily: 'Inter_600SemiBold',
       color: colors.primary,
+    },
+    recurringAlert: {
+      flexDirection: "row",
+      alignItems: "center",
+      backgroundColor: colors.primary + "12",
+      borderRadius: 12,
+      padding: 12,
+      borderWidth: 1,
+      borderColor: colors.primary + "20",
+      marginTop: 4,
+      marginBottom: 20,
+      gap: 8,
+    },
+    recurringAlertText: {
+      flex: 1,
+      fontSize: 12,
+      fontFamily: "Inter_400Regular",
+      color: colors.foreground,
+      lineHeight: 16,
     },
   });
 }

@@ -82,6 +82,7 @@ import { useSplitState } from "./state/useSplitState";
 export { parseGroupInviteCode } from "./state/useSplitState";
 import { useBudgetState } from "./state/useBudgetState";
 import { useCategoryState } from "./state/useCategoryState";
+import { useDetectedTransactionState, type DetectedTransaction, type DetectionSettings } from "./state/useDetectedTransactionState";
 
 export type ExpenseCategory =
   | "travel"
@@ -100,6 +101,7 @@ export interface CustomCategory {
   name: string;
   color: string;
   icon: string;
+  isRecurring?: boolean;
 }
 
 export interface UserProfile {
@@ -223,7 +225,7 @@ interface AppContextType {
   setBudgetLimit: (category: string, amount: number) => Promise<void>;
   getCategoryBudgetPct: (category: string) => number;
   customCategories: CustomCategory[];
-  addCustomCategory: (name: string, color: string, icon: string) => Promise<string>;
+  addCustomCategory: (name: string, color: string, icon: string, isRecurring?: boolean) => Promise<string>;
   deleteCustomCategory: (id: string) => Promise<void>;
   getOweSummary: () => { totalOwed: number; totalOwe: number };
   joinGroupFromInvite: (inviteCode: string) => Promise<SplitGroup | null>;
@@ -240,6 +242,16 @@ interface AppContextType {
     buttons?: CustomAlertButton[],
     options?: { cancelable?: boolean }
   ) => void;
+  // Smart Detection
+  detectedTransactions: DetectedTransaction[];
+  pendingTransactionCount: number;
+  detectionSettings: DetectionSettings;
+  updateDetectionSettings: (partial: Partial<DetectionSettings>) => Promise<void>;
+  syncDetectedTransactions: () => Promise<void>;
+  approveTransaction: (id: string, edits?: { amount?: number; category?: string; merchant?: string }) => Promise<void>;
+  rejectTransaction: (id: string) => Promise<void>;
+  approveAllTransactions: () => Promise<void>;
+  rejectAllTransactions: () => Promise<void>;
 }
 
 // POLISH 1: Export currency helper
@@ -499,8 +511,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     loaded: splitLoaded,
   } = useSplitState(setLastDeletedItem, getBalances, profile?.name);
 
+  const {
+    detectedTransactions,
+    pendingTransactionCount,
+    detectionSettings,
+    updateDetectionSettings,
+    syncFromNative: syncDetectedTransactions,
+    approveTransaction,
+    rejectTransaction,
+    approveAll: approveAllTransactions,
+    rejectAll: rejectAllTransactions,
+    loaded: detectionLoaded,
+  } = useDetectedTransactionState(addExpense);
+
   // Overall ready status computed from sub-states
-  const loaded = profileLoaded && expenseLoaded && splitLoaded && budgetLoaded && categoryLoaded;
+  const loaded = profileLoaded && expenseLoaded && splitLoaded && budgetLoaded && categoryLoaded && detectionLoaded;
 
   // ── Derived State Calculations (Master Orchestrator) ──
   const allExpenses = useMemo(() => {
@@ -738,6 +763,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         clearAllData,
         syncStatus,
         showAlert,
+        detectedTransactions,
+        pendingTransactionCount,
+        detectionSettings,
+        updateDetectionSettings,
+        syncDetectedTransactions,
+        approveTransaction,
+        rejectTransaction,
+        approveAllTransactions,
+        rejectAllTransactions,
       }}
     >
       {children}

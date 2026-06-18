@@ -30,14 +30,18 @@ import {
   CustomCategory,
   SplitGroup,
   parseGroupName,
+  useCurrency,
 } from "@/context/AppContext";
 import { useColors } from "@/hooks/useColors";
+import { SUPPORTED_CURRENCIES } from "@/constants/currencies";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { isSameMember, getExpenseMemberConsumptionShare, evaluateMathExpression } from "@/lib/split";
 import { BUILTIN_CATEGORIES, resolveExpenseMeta } from "@/constants/categories";
 import { formatTable, formatKeyValue } from "@/lib/tableFormatter";
 import { useRouter } from "expo-router";
 import { exportFile, escapeCSVCell } from "@/lib/csvExporter";
+import { exportPersonalExpensesPDF } from "@/lib/pdfExporter";
+import { NativeAdCard } from "@/components/NativeAdCard";
 
 const BUILTIN_KEYS = BUILTIN_CATEGORIES.map((c) => c.key);
 
@@ -53,6 +57,7 @@ interface HistoryItem {
   amount: number;
   isDebit: boolean;
   subtitle: string;
+  isRecurring?: boolean;
 }
 
 type Section = { title: string; total: number; data: HistoryItem[] };
@@ -63,24 +68,27 @@ function fmt(n: number): string {
   return Math.round(n).toLocaleString("en-IN");
 }
 
-const formatSpent = (amount: number) => {
-  if (amount === 0) return "₹0";
-  if (amount >= 100000) {
-    const val = amount / 100000;
-    return `₹${val % 1 === 0 ? val.toFixed(0) : val.toFixed(1)}L`;
-  }
-  if (amount >= 1000) {
-    const val = amount / 1000;
-    return `₹${val % 1 === 0 ? val.toFixed(0) : val.toFixed(1)}k`;
-  }
-  return `₹${amount}`;
-};
+
 
 function HistoryScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const currency = useCurrency();
   const { expenses, editExpense, deleteExpense, deleteSplitExpense, customCategories, splitGroups, profile, getCurrentMonthExpenses, lastDeleted, undoDelete, clearLastDeleted } = useApp();
+
+  const formatSpent = (amount: number) => {
+    if (amount === 0) return `${currency}0`;
+    if (amount >= 100000) {
+      const val = amount / 100000;
+      return `${currency}${val % 1 === 0 ? val.toFixed(0) : val.toFixed(1)}L`;
+    }
+    if (amount >= 1000) {
+      const val = amount / 1000;
+      return `${currency}${val % 1 === 0 ? val.toFixed(0) : val.toFixed(1)}k`;
+    }
+    return `${currency}${amount}`;
+  };
 
   const [query, setQuery] = useState("");
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
@@ -188,15 +196,25 @@ function HistoryScreen() {
 
   const allItems = useMemo<HistoryItem[]>(() => {
     // 1. Personal expenses (always Debit)
-    const personal: HistoryItem[] = expenses.map((e) => ({
-      id: e.id,
-      description: e.description || resolveExpenseMeta(e.category, customCategories, colors).label,
-      date: e.date,
-      category: e.category,
-      amount: e.amount,
-      isDebit: true,
-      subtitle: "Personal",
-    }));
+    const personal: HistoryItem[] = expenses.map((e) => {
+      const custom = customCategories.find((c) => c.id === e.category);
+      const hasActiveRecurringInCat = expenses.some(
+        (ex) => ex.recurring === "monthly" && !ex.recurringGroupId && ex.category === e.category
+      );
+      const matchesCommonRecurringName = ["netflix", "spotify", "youtube premium", "rent", "icloud"].some(
+        (name) => (e.description || "").toLowerCase().includes(name)
+      );
+      return {
+        id: e.id,
+        description: e.description || resolveExpenseMeta(e.category, customCategories, colors).label,
+        date: e.date,
+        category: e.category,
+        amount: e.amount,
+        isDebit: true,
+        subtitle: "Personal",
+        isRecurring: e.recurring === "monthly" || !!e.recurringGroupId || !!custom?.isRecurring || hasActiveRecurringInCat || matchesCommonRecurringName,
+      };
+    });
 
     // 2. Shared group expenses and settlements
     const shared: HistoryItem[] = splitGroups.flatMap((group) => {
@@ -317,6 +335,18 @@ function HistoryScreen() {
     }));
   }, [grouped]);
 
+  const listData = useMemo(() => {
+    const result: (Section | { id: string; isAd: boolean })[] = [];
+    sections.forEach((sec, idx) => {
+      result.push(sec);
+      // Inject an ad card after the 2nd section, and then every 4 sections
+      if (idx === 1 || (idx > 1 && (idx - 1) % 4 === 0)) {
+        result.push({ id: `ad-${sec.title}`, isAd: true });
+      }
+    });
+    return result;
+  }, [sections]);
+
   const totalIncome = profile?.salary ?? 0;
 
   const totalExpense = useMemo(() => {
@@ -347,7 +377,7 @@ function HistoryScreen() {
     const mkLabel = (cat: string) => resolveExpenseMeta(cat, customCategories, colors).label;
     const catRows = Object.entries(byCategory)
       .sort((a, b) => b[1] - a[1])
-      .map(([cat, amt]) => [mkLabel(cat), `₹${amt.toLocaleString("en-IN")}`]);
+      .map(([cat, amt]) => [mkLabel(cat), `${currency}${amt.toLocaleString()}`]);
 
     const catTable = formatTable("Spending by Category", [
       { header: "Category", width: 18, align: "left" as const },
@@ -357,7 +387,7 @@ function HistoryScreen() {
     const topExps = [...personalExps]
       .sort((a, b) => b.amount - a.amount)
       .slice(0, 5)
-      .map((e) => [e.description.slice(0, 30), `₹${e.amount.toLocaleString("en-IN")}`]);
+      .map((e) => [e.description.slice(0, 30), `${currency}${e.amount.toLocaleString()}`]);
 
     const topTable = formatTable("Top Expenses", [
       { header: "Description", width: 22, align: "left" as const },
@@ -366,7 +396,7 @@ function HistoryScreen() {
 
     const summary = formatKeyValue([
       ["Month", currentMonthKey],
-      ["Total Spent", `₹${total.toLocaleString("en-IN")}`],
+      ["Total Spent", `${currency}${total.toLocaleString()}`],
       ["Transactions", `${personalExps.length}`],
     ]);
 
@@ -393,7 +423,8 @@ function HistoryScreen() {
     }
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
-      const headers = ["Date", "Category", "Description", "Amount (INR)", "Type"];
+      const currencyCode = SUPPORTED_CURRENCIES.find(c => c.symbol === currency)?.code || "INR";
+      const headers = ["Date", "Category", "Description", `Amount (${currencyCode})`, "Type"];
       const rows = filtered.map(e => {
         const cat = resolveExpenseMeta(e.category, customCategories, colors);
         const catLabel = cat ? cat.label : "Others";
@@ -414,6 +445,25 @@ function HistoryScreen() {
     }
   };
 
+  const sharePDFReport = async () => {
+    if (filtered.length === 0) {
+      Alert.alert("No Data", "No transactions this month to export.");
+      return;
+    }
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    try {
+      await exportPersonalExpensesPDF(
+        filtered,
+        customCategories || [],
+        profile?.name || "User",
+        `Expense Statement - ${currentMonthKey}`,
+        currency
+      );
+    } catch (err: any) {
+      Alert.alert("Export Failed", err.message || "Failed to export monthly PDF report");
+    }
+  };
+
   const handleShareMonthlyReport = async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     Alert.alert(
@@ -423,6 +473,7 @@ function HistoryScreen() {
         { text: "Cancel", style: "cancel" },
         { text: "Share Text Summary", onPress: shareTextSummary },
         { text: "Export CSV Spreadsheet", onPress: shareCSVSpreadsheet },
+        { text: "Export PDF Report", onPress: sharePDFReport },
       ]
     );
   };
@@ -537,15 +588,23 @@ function HistoryScreen() {
           />
         </View>
         <View style={{ flex: 1, marginLeft: 13 }}>
-          <Text style={s.txDesc} numberOfLines={1}>
-            {exp.description}
-          </Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <Text style={s.txDesc} numberOfLines={1}>
+              {exp.description}
+            </Text>
+            {exp.isRecurring && (
+              <View style={s.miniRecurringBadge}>
+                <Ionicons name="repeat" size={10} color={colors.primary} />
+                <Text style={s.miniRecurringBadgeText}>Bill</Text>
+              </View>
+            )}
+          </View>
           <Text style={s.txDate}>
             {exp.subtitle}
           </Text>
         </View>
         <Text style={[s.txAmt, { color: isDebit ? colors.destructive : "#10b981" }]}>
-          {isDebit ? "-" : "+"}₹{exp.amount.toLocaleString("en-IN")}
+          {isDebit ? "-" : "+"}{currency}{exp.amount.toLocaleString()}
         </Text>
         {isDebit && exp.category !== "settlement" ? (
           <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginLeft: 8 }}>
@@ -716,18 +775,18 @@ function HistoryScreen() {
       <View style={s.summaryStatsBar}>
         <View style={s.statCol}>
           <Text style={s.statColLabel}>Income</Text>
-          <Text style={[s.statColVal, { color: "#10b981" }]}>₹{fmt(totalIncome)}</Text>
+          <Text style={[s.statColVal, { color: "#10b981" }]}>{currency}{fmt(totalIncome)}</Text>
         </View>
         <View style={s.statColDivider} />
         <View style={s.statCol}>
           <Text style={s.statColLabel}>Expense</Text>
-          <Text style={[s.statColVal, { color: "#f97316" }]}>₹{fmt(totalExpense)}</Text>
+          <Text style={[s.statColVal, { color: "#f97316" }]}>{currency}{fmt(totalExpense)}</Text>
         </View>
         <View style={s.statColDivider} />
         <View style={s.statCol}>
           <Text style={s.statColLabel}>Total</Text>
           <Text style={[s.statColVal, { color: netBalance >= 0 ? colors.primary : colors.destructive }]}>
-            {netBalance < 0 ? "-" : ""}₹{fmt(Math.abs(netBalance))}
+            {netBalance < 0 ? "-" : ""}{currency}{fmt(Math.abs(netBalance))}
           </Text>
         </View>
       </View>
@@ -778,33 +837,39 @@ function HistoryScreen() {
         </View>
       ) : (
         <FlatList
-          data={sections}
-          keyExtractor={(item) => item.title}
+          data={listData}
+          keyExtractor={(item) => ("isAd" in item ? item.id : item.title)}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={{
             padding: 16,
             paddingBottom: tabClearance + 16,
           }}
-          renderItem={({ item: section }) => (
-            <View style={{ marginBottom: 26 }}>
-              <View style={s.sectionHeader}>
-                <Text style={s.sectionTitle}>{section.title}</Text>
-                <Text style={s.sectionTotal}>
-                  -₹{section.total.toLocaleString("en-IN")}
-                </Text>
+          renderItem={({ item }) => {
+            if ("isAd" in item) {
+              return <NativeAdCard placement="dashboard" noPadding={true} />;
+            }
+            const section = item as Section;
+            return (
+              <View style={{ marginBottom: 26 }}>
+                <View style={s.sectionHeader}>
+                  <Text style={s.sectionTitle}>{section.title}</Text>
+                  <Text style={s.sectionTotal}>
+                    -{currency}{section.total.toLocaleString()}
+                  </Text>
+                </View>
+                <View style={s.card}>
+                  {isDark && (
+                    <BlurView intensity={Platform.OS === "web" ? 0 : 85} tint="dark" style={StyleSheet.absoluteFill} />
+                  )}
+                  {section.data.map((exp, i) => (
+                    <View key={exp.id} style={i > 0 ? s.divider : undefined}>
+                      {renderItem(exp)}
+                    </View>
+                  ))}
+                </View>
               </View>
-              <View style={s.card}>
-                {isDark && (
-                  <BlurView intensity={Platform.OS === "web" ? 0 : 85} tint="dark" style={StyleSheet.absoluteFill} />
-                )}
-                {section.data.map((exp, i) => (
-                  <View key={exp.id} style={i > 0 ? s.divider : undefined}>
-                    {renderItem(exp)}
-                  </View>
-                ))}
-              </View>
-            </View>
-          )}
+            );
+          }}
         />
       )}
 
@@ -836,7 +901,7 @@ function HistoryScreen() {
             <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={{ maxHeight: 420 }}>
               {/* Amount input block at top */}
               <View style={s.largeAmountBlock}>
-                <Text style={s.largeRupeeSymbol}>₹</Text>
+                <Text style={s.largeRupeeSymbol}>{currency}</Text>
                 <TextInput
                   testID="input-edit-amount"
                   style={s.largeAmtInput}
@@ -864,7 +929,7 @@ function HistoryScreen() {
                     return (
                       <View style={s.mathPreviewContainer}>
                         <Ionicons name="calculator-outline" size={12} color={colors.primary} />
-                        <Text style={s.mathPreviewText}>Total: ₹{Math.round(resolved).toLocaleString("en-IN")}</Text>
+                        <Text style={s.mathPreviewText}>Total: {currency}{Math.round(resolved).toLocaleString()}</Text>
                       </View>
                     );
                   }
@@ -1448,6 +1513,22 @@ const histStyles = (colors: ReturnType<typeof useColors>, topPad: number) => {
     undoText: {
       fontSize: 14,
       fontFamily: "Inter_700Bold",
+      color: colors.primary,
+    },
+    miniRecurringBadge: {
+      flexDirection: "row",
+      alignItems: "center",
+      backgroundColor: colors.primary + "10",
+      paddingHorizontal: 5,
+      paddingVertical: 1.5,
+      borderRadius: 6,
+      borderWidth: 0.5,
+      borderColor: colors.primary + "25",
+      gap: 2,
+    },
+    miniRecurringBadgeText: {
+      fontSize: 9,
+      fontFamily: "Inter_600SemiBold",
       color: colors.primary,
     },
   });

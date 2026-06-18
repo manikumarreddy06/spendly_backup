@@ -12,7 +12,7 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useApp } from "@/context/AppContext";
+import { useApp, useCurrency } from "@/context/AppContext";
 import { useColors } from "@/hooks/useColors";
 import { useThemePreference } from "@/hooks/useThemePreference";
 import { SUPABASE_ENABLED } from "@/lib/config";
@@ -33,6 +33,7 @@ function ProfileTabScreen() {
     else setThemeMode("system");
   }, [theme, setThemeMode]);
   const { profile, expenses, splitGroups, getCurrentMonthTotal, getSpentByCategory } = useApp();
+  const currency = useCurrency();
 
   const themeIcon = theme === "dark" ? "moon" : theme === "light" ? "sunny" : "phone-portrait-outline";
   const themeLabel = theme === "dark" ? "Dark" : theme === "light" ? "Light" : "System";
@@ -44,10 +45,10 @@ function ProfileTabScreen() {
   const budgetPct = budgetLimit > 0 ? Math.min(100, Math.round((monthTotal / budgetLimit) * 100)) : 0;
 
   const stats = useMemo(() => [
-    { label: "Spent", value: `₹${fmt(monthTotal)}`, icon: "wallet-outline", color: colors.primary },
+    { label: "Spent", value: `${currency}${fmt(monthTotal)}`, icon: "wallet-outline", color: colors.primary },
     { label: "Groups", value: `${groupCount}`, icon: "people-outline", color: colors.secondary },
-    { label: "Remaining", value: budgetLimit > 0 ? `₹${fmt(remaining)}` : "—", icon: "layers-outline", color: remaining > 0 ? "#10b981" : colors.destructive },
-  ], [monthTotal, groupCount, remaining, budgetLimit, colors]);
+    { label: "Remaining", value: budgetLimit > 0 ? `${currency}${fmt(remaining)}` : "—", icon: "layers-outline", color: remaining > 0 ? "#10b981" : colors.destructive },
+  ], [monthTotal, groupCount, remaining, budgetLimit, colors, currency]);
 
   return (
     <View style={[s.root, { backgroundColor: colors.background, paddingTop: Platform.OS === "web" ? 67 : insets.top }]}>
@@ -108,7 +109,7 @@ function ProfileTabScreen() {
               />
             </View>
             <Text style={[s.budgetSub, { color: colors.mutedForeground }]}>
-              ₹{fmt(monthTotal)} of ₹{fmt(budgetLimit)}
+              {currency}{fmt(monthTotal)} of {currency}{fmt(budgetLimit)}
             </Text>
           </View>
         )}

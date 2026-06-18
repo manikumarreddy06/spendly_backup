@@ -15,11 +15,13 @@ import {
   TextInput,
   View,
   Dimensions,
+  TouchableOpacity,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Path } from "react-native-svg";
 import { useApp } from "@/context/AppContext";
 import { useColors } from "@/hooks/useColors";
+import { SUPPORTED_CURRENCIES } from "@/constants/currencies";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
@@ -53,6 +55,7 @@ export default function Onboarding() {
   const [currentSlide, setCurrentSlide] = useState(0);
   const [name, setName] = useState("");
   const [salary, setSalary] = useState("");
+  const [selectedCurrency, setSelectedCurrency] = useState(SUPPORTED_CURRENCIES[0]);
   const [nameFocused, setNameFocused] = useState(false);
   const [salaryFocused, setSalaryFocused] = useState(false);
 
@@ -106,7 +109,7 @@ export default function Onboarding() {
       return;
     }
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    await setProfile({ name: name.trim(), salary: salaryNum, currency: "₹" });
+    await setProfile({ name: name.trim(), salary: salaryNum, currency: selectedCurrency.symbol });
     router.replace("/(tabs)");
   };
 
@@ -136,7 +139,7 @@ export default function Onboarding() {
                 <Ionicons name="checkmark-circle" size={22} color="#10b981" />
               </View>
 
-              <Text style={s.phoneAmount}>₹1,250</Text>
+              <Text style={s.phoneAmount}>{selectedCurrency.symbol}1,250</Text>
 
               <View style={s.fieldList}>
                 <View style={s.fieldRow}>
@@ -193,7 +196,7 @@ export default function Onboarding() {
               <View style={s.spentSubCard}>
                 <View style={{ flex: 1 }}>
                   <Text style={s.spentSubLabel}>Total Spent</Text>
-                  <Text style={s.spentSubAmount}>₹24,650</Text>
+                  <Text style={s.spentSubAmount}>{selectedCurrency.symbol}24,650</Text>
                   <View style={s.spentSubChange}>
                     <Ionicons name="arrow-down" size={12} color="#10b981" />
                     <Text style={s.spentSubChangeText}>12% vs last month</Text>
@@ -226,7 +229,7 @@ export default function Onboarding() {
                   <View style={{ flex: 1, marginLeft: 8 }}>
                     <View style={s.catNameRow}>
                       <Text style={s.catNameText}>Food & Dining</Text>
-                      <Text style={s.catValueText}>₹10,350</Text>
+                      <Text style={s.catValueText}>{selectedCurrency.symbol}10,350</Text>
                     </View>
                     <View style={s.progressTrack}>
                       <View style={[s.progressBar, { width: "42%", backgroundColor: "#f97316" }]} />
@@ -241,7 +244,7 @@ export default function Onboarding() {
                   <View style={{ flex: 1, marginLeft: 8 }}>
                     <View style={s.catNameRow}>
                       <Text style={s.catNameText}>Shopping</Text>
-                      <Text style={s.catValueText}>₹5,900</Text>
+                      <Text style={s.catValueText}>{selectedCurrency.symbol}5,900</Text>
                     </View>
                     <View style={s.progressTrack}>
                       <View style={[s.progressBar, { width: "24%", backgroundColor: "#a855f7" }]} />
@@ -256,7 +259,7 @@ export default function Onboarding() {
                   <View style={{ flex: 1, marginLeft: 8 }}>
                     <View style={s.catNameRow}>
                       <Text style={s.catNameText}>Transport</Text>
-                      <Text style={s.catValueText}>₹3,650</Text>
+                      <Text style={s.catValueText}>{selectedCurrency.symbol}3,650</Text>
                     </View>
                     <View style={s.progressTrack}>
                       <View style={[s.progressBar, { width: "15%", backgroundColor: "#3b82f6" }]} />
@@ -283,7 +286,7 @@ export default function Onboarding() {
                   <Text style={s.boxAction}>Edit</Text>
                 </View>
                 <View style={s.boxAmountRow}>
-                  <Text style={s.boxAmountMain}>₹18,000<Text style={s.boxAmountSub}> / ₹25,000</Text></Text>
+                  <Text style={s.boxAmountMain}>{selectedCurrency.symbol}18,000<Text style={s.boxAmountSub}> / {selectedCurrency.symbol}25,000</Text></Text>
                   <Text style={s.boxPctText}>72%</Text>
                 </View>
                 <View style={s.progressTrack}>
@@ -297,7 +300,7 @@ export default function Onboarding() {
                 <Text style={s.goalTitle}>iPhone Fund</Text>
                 <View style={s.goalDetailsRow}>
                   <View style={{ flex: 1 }}>
-                    <Text style={s.goalAmountText}>₹24,500<Text style={s.boxAmountSub}> / ₹60,000</Text></Text>
+                    <Text style={s.goalAmountText}>{selectedCurrency.symbol}24,500<Text style={s.boxAmountSub}> / {selectedCurrency.symbol}60,000</Text></Text>
                   </View>
                   <View style={s.goalBadgeRow}>
                     <View style={s.goalRing}>
@@ -456,10 +459,39 @@ export default function Onboarding() {
                   />
                 </View>
 
+                <Text style={[s.setupLabel, { marginTop: 18 }]}>Preferred Currency</Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={s.currencyRow}
+                  keyboardShouldPersistTaps="handled"
+                >
+                  {SUPPORTED_CURRENCIES.map((curr) => {
+                    const isSel = selectedCurrency.code === curr.code;
+                    return (
+                      <TouchableOpacity
+                        key={curr.code}
+                        onPress={() => {
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+                          setSelectedCurrency(curr);
+                        }}
+                        style={[
+                          s.currencyChip,
+                          isSel && s.currencyChipActive,
+                        ]}
+                      >
+                        <Text style={[s.currencyChipText, isSel && s.currencyChipTextActive]}>
+                          {curr.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+
                 <Text style={[s.setupLabel, { marginTop: 18 }]}>Monthly Budget / Salary</Text>
                 <View style={[s.setupInputWrap, salaryFocused && s.setupInputFocused]}>
                   <Text style={[s.setupRupee, { color: salaryFocused ? "#10b981" : "#4b5563" }]}>
-                    ₹
+                    {selectedCurrency.symbol}
                   </Text>
                   <TextInput
                     testID="input-salary"
@@ -1035,5 +1067,31 @@ const styles = (topPad: number, bottomPad: number) =>
       fontSize: 12,
       fontFamily: "Inter_400Regular",
       color: "#6b7280",
+    },
+    currencyRow: {
+      flexDirection: "row",
+      gap: 8,
+      paddingBottom: 4,
+    },
+    currencyChip: {
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderRadius: 10,
+      backgroundColor: "#1f293d33",
+      borderWidth: 1,
+      borderColor: "#1f293d",
+    },
+    currencyChipActive: {
+      backgroundColor: "#10b98122",
+      borderColor: "#10b981",
+    },
+    currencyChipText: {
+      fontSize: 13,
+      fontFamily: "Inter_500Medium",
+      color: "#9ca3af",
+    },
+    currencyChipTextActive: {
+      color: "#10b981",
+      fontFamily: "Inter_700Bold",
     },
   });

@@ -11,6 +11,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
+import Svg, { Defs, Mask, Rect } from "react-native-svg";
 
 interface LayoutRect {
   x: number;
@@ -111,7 +112,15 @@ export function AppTourOverlay({
   const layout = activeStep.getLayout();
 
   // Deconstruct coordinates
-  const { x, y, w, h } = layout;
+  const { x, y: rawY, w, h } = layout;
+
+  // On Android with edge-to-edge, measureInWindow() returns y relative to BELOW the status bar,
+  // but the Modal (statusBarTranslucent=true) starts from the ABSOLUTE top of the screen.
+  // We add insets.top to measured layouts to correct this offset.
+  // Hardcoded/default layouts (including FAB) already use absolute screen coordinates.
+  const isMeasured = (currentStep === 0 && notifLayout !== null) || (currentStep === 1 && budgetLayout !== null);
+  const platformOffset = (Platform.OS === "android" && isMeasured) ? (insets.top - 12) : 0;
+  const y = rawY + platformOffset;
 
   const isNearBottom = y > screenHeight / 2;
   
@@ -122,6 +131,9 @@ export function AppTourOverlay({
 
   // Calculate arrow horizontal position (clamped to prevent overflow)
   const arrowLeft = Math.max(24, Math.min(screenWidth - 48 - 24, x + w / 2 - 24));
+  
+  // Determine border radius of the cutout hole (circular for bell & FAB, rounded rect for balance card)
+  const cutoutBorderRadius = currentStep === 1 ? 28 : w / 2;
 
   return (
     <Modal
@@ -129,19 +141,35 @@ export function AppTourOverlay({
       transparent={true}
       visible={isVisible}
       onRequestClose={handleSkip}
+      statusBarTranslucent={true}
     >
       <View style={styles.overlayContainer}>
-        {/* Top Overlay Mask */}
-        <View style={[styles.mask, { top: 0, left: 0, right: 0, height: Math.max(0, y) }]} />
-        
-        {/* Bottom Overlay Mask */}
-        <View style={[styles.mask, { top: y + h, left: 0, right: 0, bottom: 0 }]} />
-        
-        {/* Left Overlay Mask */}
-        <View style={[styles.mask, { top: y, left: 0, width: Math.max(0, x), height: h }]} />
-        
-        {/* Right Overlay Mask */}
-        <View style={[styles.mask, { top: y, left: x + w, right: 0, height: h }]} />
+        {/* Full-screen SVG Overlay with masked cutout hole */}
+        <Svg width="100%" height="100%" style={StyleSheet.absoluteFill}>
+          <Defs>
+            <Mask id="spotlightMask">
+              {/* Entire screen is white (masked overlay is visible) */}
+              <Rect width="100%" height="100%" fill="#ffffff" />
+              {/* Cutout hole is black (masked overlay is transparent) */}
+              <Rect
+                x={x}
+                y={y}
+                width={w}
+                height={h}
+                rx={cutoutBorderRadius}
+                ry={cutoutBorderRadius}
+                fill="#000000"
+              />
+            </Mask>
+          </Defs>
+          {/* Semi-transparent dark overlay */}
+          <Rect
+            width="100%"
+            height="100%"
+            fill="rgba(3, 7, 4, 0.72)"
+            mask="url(#spotlightMask)"
+          />
+        </Svg>
 
         {/* Spotlight cutout border highlight */}
         <View
@@ -228,10 +256,6 @@ const styles = StyleSheet.create({
   overlayContainer: {
     flex: 1,
     backgroundColor: "transparent",
-  },
-  mask: {
-    position: "absolute",
-    backgroundColor: "rgba(3, 7, 4, 0.72)",
   },
   spotlightHighlight: {
     position: "absolute",

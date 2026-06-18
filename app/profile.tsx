@@ -21,12 +21,21 @@ import {
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useApp, ExpenseCategory } from "@/context/AppContext";
+import { useApp, ExpenseCategory, useCurrency } from "@/context/AppContext";
 import { useColors } from "@/hooks/useColors";
 import { BUILTIN_CATEGORIES } from "@/constants/categories";
+import { SUPPORTED_CURRENCIES } from "@/constants/currencies";
 import { InlineError } from "@/components/InlineError";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { exportFile, escapeCSVCell } from "@/lib/csvExporter";
+import { exportPersonalExpensesPDF } from "@/lib/pdfExporter";
+import { useIsFocused } from "@react-navigation/native";
+import { DateTimePickerAndroid } from "@react-native-community/datetimepicker";
+import {
+  isNotificationAccessEnabled,
+  openNotificationAccessSettings,
+  setDetectionEnabled,
+} from "@/lib/transactionDetection";
 
 const CATEGORIES = BUILTIN_CATEGORIES;
 
@@ -45,16 +54,99 @@ function ProfileScreen() {
     splitGroups,
     clearAllData,
     getSpentByCategory,
+    detectionSettings,
+    updateDetectionSettings,
   } = useApp();
+
+  const isFocused = useIsFocused();
 
   const topPad = Platform.OS === "web" ? 67 : insets.top;
   const bottomPad = Platform.OS === "web" ? 34 : insets.bottom;
+
+  // Smart Detection States & Helpers
+  const [notifAccessGranted, setNotifAccessGranted] = useState(false);
+
+  const checkNotificationAccess = async () => {
+    if (Platform.OS === "android") {
+      const isGranted = await isNotificationAccessEnabled();
+      setNotifAccessGranted(isGranted);
+    }
+  };
+
+  useEffect(() => {
+    if (isFocused) {
+      checkNotificationAccess();
+    }
+  }, [isFocused]);
+
+  const handleToggleDetection = async (val: boolean) => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    
+    if (val) {
+      const isGranted = await isNotificationAccessEnabled();
+      if (!isGranted) {
+        Alert.alert(
+          "Notification Access Required",
+          "Spendly needs permission to read notifications from your bank and UPI apps. Would you like to enable it now in system settings?",
+          [
+            { text: "Cancel", style: "cancel" },
+            {
+              text: "Enable Settings",
+              onPress: () => {
+                openNotificationAccessSettings();
+              }
+            }
+          ]
+        );
+        return;
+      }
+    }
+
+    await updateDetectionSettings({ enabled: val });
+    await setDetectionEnabled(val);
+  };
+
+  const showTimePicker = () => {
+    if (Platform.OS !== "android") return;
+    
+    const [hours, minutes] = (detectionSettings?.reviewReminderTime || "20:00").split(":").map(Number);
+    const date = new Date();
+    date.setHours(hours);
+    date.setMinutes(minutes);
+
+    DateTimePickerAndroid.open({
+      value: date,
+      mode: "time",
+      is24Hour: false,
+      onChange: async (event, selectedDate) => {
+        if (event.type === "set" && selectedDate) {
+          const h = selectedDate.getHours().toString().padStart(2, "0");
+          const m = selectedDate.getMinutes().toString().padStart(2, "0");
+          const newTime = `${h}:${m}`;
+          await updateDetectionSettings({ reviewReminderTime: newTime });
+        }
+      },
+    });
+  };
+
+  const formatTime12h = (time24: string) => {
+    const [hStr, mStr] = time24.split(":");
+    const h = parseInt(hStr, 10);
+    const m = parseInt(mStr, 10);
+    if (isNaN(h) || isNaN(m)) return time24;
+    const ampm = h >= 12 ? "PM" : "AM";
+    const displayH = h % 12 || 12;
+    const displayM = m.toString().padStart(2, "0");
+    return `${displayH}:${displayM} ${ampm}`;
+  };
 
   // Personal Info States
   const [name, setName] = useState(profile?.name ?? "");
   const [salary, setSalary] = useState(profile?.salary?.toString() ?? "");
   const [nameError, setNameError] = useState("");
   const [salaryError, setSalaryError] = useState("");
+  const [currencyModalVisible, setCurrencyModalVisible] = useState(false);
+  const currency = useCurrency();
 
   // Category Budgets States
   const [limits, setLimits] = useState<Record<string, string>>({});
@@ -137,6 +229,19 @@ function ProfileScreen() {
   };
   const [restoreText, setRestoreText] = useState("");
 
+  const handleExportPDF = async () => {
+    if (expenses.length === 0) {
+      Alert.alert("No Data", "There are no expenses to export.");
+      return;
+    }
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    try {
+      await exportPersonalExpensesPDF(expenses, customCategories || [], profile?.name || "User", "Personal Expense Statement", currency);
+    } catch (e: any) {
+      Alert.alert("Export Failed", e.message || "Could not export PDF statement");
+    }
+  };
+
   const handleExportCSV = async () => {
     if (expenses.length === 0) {
       Alert.alert("No Data", "There are no expenses to export.");
@@ -144,7 +249,8 @@ function ProfileScreen() {
     }
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     try {
-      const headers = ["Date", "Category", "Description", "Amount (INR)"];
+      const currencyCode = SUPPORTED_CURRENCIES.find(c => c.symbol === currency)?.code || "INR";
+      const headers = ["Date", "Category", "Description", `Amount (${currencyCode})`];
       const rows = expenses.map(e => {
         const cat = CATEGORIES.find(c => c.key === e.category);
         const catLabel = cat ? cat.label : (customCategories.find(c => c.id === e.category)?.name || "Others");
@@ -266,7 +372,7 @@ function ProfileScreen() {
     if (trimmed !== profile?.name) {
       try {
         await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-        await setProfile({ name: trimmed, salary: profile?.salary ?? 0, currency: "₹" });
+        await setProfile({ name: trimmed, salary: profile?.salary ?? 0, currency: profile?.currency ?? "₹" });
       } catch (e) {
         console.warn("Failed to autosave name:", e);
       }
@@ -287,7 +393,7 @@ function ProfileScreen() {
     if (sal !== profile?.salary) {
       try {
         await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-        await setProfile({ name: profile?.name ?? "", salary: sal, currency: "₹" });
+        await setProfile({ name: profile?.name ?? "", salary: sal, currency: profile?.currency ?? "₹" });
       } catch (e) {
         console.warn("Failed to autosave monthly budget:", e);
       }
@@ -360,7 +466,7 @@ function ProfileScreen() {
           </View>
           <Text style={s.avatarName}>{profile?.name || "User"}</Text>
           <Text style={s.avatarBudget}>
-            Monthly Budget: ₹{Math.round(profile?.salary ?? 0).toLocaleString("en-IN")}
+            Monthly Budget: {currency}{Math.round(profile?.salary ?? 0).toLocaleString()}
           </Text>
         </View>
 
@@ -387,7 +493,7 @@ function ProfileScreen() {
           <View style={s.inputRow}>
             <Ionicons name="wallet-outline" size={18} color={colors.mutedForeground} style={s.rowIcon} />
             <Text style={s.rowLabel}>Monthly Budget</Text>
-            <Text style={s.inputRupee}>₹</Text>
+            <Text style={s.inputRupee}>{currency}</Text>
             <TextInput
               testID="input-profile-salary"
               style={[s.rowInput, s.salaryInput]}
@@ -399,6 +505,25 @@ function ProfileScreen() {
               keyboardType="numeric"
             />
           </View>
+
+          <View style={s.divider} />
+
+          <TouchableOpacity
+            testID="button-profile-currency"
+            style={s.navRow}
+            onPress={async () => {
+              await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+              setCurrencyModalVisible(true);
+            }}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="cash-outline" size={18} color={colors.mutedForeground} style={s.rowIcon} />
+            <Text style={[s.rowLabel, { flex: 1 }]}>Currency</Text>
+            <Text style={[s.rowValue, { color: colors.mutedForeground, marginRight: 8 }]}>
+              {SUPPORTED_CURRENCIES.find(c => c.symbol === currency)?.label ?? `(${currency})`}
+            </Text>
+            <Ionicons name="chevron-forward" size={16} color={colors.mutedForeground} />
+          </TouchableOpacity>
         </View>
         {nameError ? (
           <View style={s.errorMargin}>
@@ -450,7 +575,7 @@ function ProfileScreen() {
                         if (spentAmt > 0) {
                           return (
                             <Text style={s.catSpentText}>
-                              ₹{Math.round(spentAmt).toLocaleString("en-IN")} spent this month
+                              {currency}{Math.round(spentAmt).toLocaleString()} spent this month
                             </Text>
                           );
                         }
@@ -458,7 +583,7 @@ function ProfileScreen() {
                       })()}
                     </View>
                     <View style={s.rowLimitInputWrap}>
-                      <Text style={s.limitRupee}>₹</Text>
+                      <Text style={s.limitRupee}>{currency}</Text>
                       <TextInput
                         testID={`input-budget-${cat.key}`}
                         style={s.limitInputText}
@@ -515,6 +640,93 @@ function ProfileScreen() {
           </TouchableOpacity>
         </View>
 
+        {/* Smart Detection Settings (Android Only) */}
+        {Platform.OS === "android" && (
+          <>
+            <Text style={s.groupLabel}>Smart Detection</Text>
+            <View style={s.card}>
+              <View style={s.toggleRow}>
+                <Ionicons name="scan-outline" size={18} color={colors.primary} style={s.rowIcon} />
+                <View style={{ flex: 1 }}>
+                  <Text style={s.rowLabel}>Auto-Detect Expenses</Text>
+                  <Text style={s.rowSubLabel}>Automatically detect transactions from notifications</Text>
+                </View>
+                <Switch
+                  testID="switch-smart-detection"
+                  value={detectionSettings?.enabled ?? false}
+                  onValueChange={handleToggleDetection}
+                  trackColor={{ false: colors.border, true: colors.primary }}
+                  thumbColor={Platform.OS === "android" ? ((detectionSettings?.enabled ?? false) ? colors.primary : "#f4f3f4") : undefined}
+                />
+              </View>
+
+              <View style={s.divider} />
+
+              <TouchableOpacity
+                style={s.navRow}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+                  openNotificationAccessSettings();
+                }}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="settings-outline" size={18} color={colors.mutedForeground} style={s.rowIcon} />
+                <View style={{ flex: 1 }}>
+                  <Text style={s.rowLabel}>Notification Access</Text>
+                  <Text style={s.rowSubLabel}>
+                    {notifAccessGranted ? "Access granted" : "Permission required to scan bank alerts"}
+                  </Text>
+                </View>
+                <Text style={[s.rowValue, { color: notifAccessGranted ? colors.primary : colors.destructive, marginRight: 8, fontSize: 12, fontFamily: "Inter_600SemiBold" }]}>
+                  {notifAccessGranted ? "Granted" : "Configure"}
+                </Text>
+                <Ionicons name="chevron-forward" size={16} color={colors.mutedForeground} />
+              </TouchableOpacity>
+
+              <View style={s.divider} />
+
+              <View style={s.toggleRow}>
+                <Ionicons name="notifications-outline" size={18} color={colors.mutedForeground} style={s.rowIcon} />
+                <View style={{ flex: 1 }}>
+                  <Text style={s.rowLabel}>Review Reminder</Text>
+                  <Text style={s.rowSubLabel}>Remind you to check pending transactions daily</Text>
+                </View>
+                <Switch
+                  testID="switch-review-reminder"
+                  value={detectionSettings?.reviewReminderEnabled ?? true}
+                  onValueChange={async (val) => {
+                    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+                    await updateDetectionSettings({ reviewReminderEnabled: val });
+                  }}
+                  trackColor={{ false: colors.border, true: colors.primary }}
+                  thumbColor={Platform.OS === "android" ? ((detectionSettings?.reviewReminderEnabled ?? true) ? colors.primary : "#f4f3f4") : undefined}
+                />
+              </View>
+
+              {(detectionSettings?.reviewReminderEnabled ?? true) && (
+                <>
+                  <View style={s.divider} />
+                  <TouchableOpacity
+                    style={s.navRow}
+                    onPress={showTimePicker}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="time-outline" size={18} color={colors.mutedForeground} style={s.rowIcon} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.rowLabel}>Reminder Time</Text>
+                      <Text style={s.rowSubLabel}>Configure daily reminder alert schedule</Text>
+                    </View>
+                    <Text style={[s.rowValue, { color: colors.primary, marginRight: 8, fontSize: 13, fontFamily: "Inter_700Bold" }]}>
+                      {formatTime12h(detectionSettings?.reviewReminderTime || "20:00")}
+                    </Text>
+                    <Ionicons name="chevron-forward" size={16} color={colors.mutedForeground} />
+                  </TouchableOpacity>
+                </>
+              )}
+            </View>
+          </>
+        )}
+
         {/* Support & Share */}
         <Text style={s.groupLabel}>Support & Share</Text>
         <View style={s.card}>
@@ -546,6 +758,19 @@ function ProfileScreen() {
         {/* Group 4: Data Management */}
         <Text style={s.groupLabel}>Data & Portability</Text>
         <View style={s.card}>
+          <TouchableOpacity
+            testID="button-export-pdf"
+            style={s.navRow}
+            onPress={handleExportPDF}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="document-outline" size={18} color="#ef4444" style={s.rowIcon} />
+            <Text style={[s.rowLabel, { flex: 1 }]}>Export Transactions (PDF)</Text>
+            <Ionicons name="chevron-forward" size={16} color={colors.mutedForeground} />
+          </TouchableOpacity>
+
+          <View style={s.divider} />
+
           <TouchableOpacity
             testID="button-export-csv"
             style={s.navRow}
@@ -599,6 +824,68 @@ function ProfileScreen() {
 
         <View style={{ height: 20 }} />
       </ScrollView>
+
+      {/* Currency Selector Modal */}
+      <Modal
+        visible={currencyModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setCurrencyModalVisible(false)}
+      >
+        <Pressable
+          style={s.modalOverlay}
+          onPress={() => setCurrencyModalVisible(false)}
+        >
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            style={s.modalContainer}
+          >
+            <Pressable style={s.modalContent} onPress={(e) => e.stopPropagation()}>
+              <View style={s.modalHeader}>
+                <Text style={s.modalTitle}>Select Currency</Text>
+                <TouchableOpacity onPress={() => setCurrencyModalVisible(false)} style={s.closeBtn}>
+                  <Ionicons name="close" size={20} color={colors.foreground} />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView
+                style={s.currencyList}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+              >
+                {SUPPORTED_CURRENCIES.map((curr) => {
+                  const isSel = currency === curr.symbol;
+                  return (
+                    <TouchableOpacity
+                      key={curr.code}
+                      onPress={async () => {
+                        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+                        await setProfile({
+                          name: profile?.name ?? "",
+                          salary: profile?.salary ?? 0,
+                          currency: curr.symbol,
+                        });
+                        setCurrencyModalVisible(false);
+                      }}
+                      style={[
+                        s.currencyOptionRow,
+                        isSel && s.currencyOptionRowActive,
+                      ]}
+                    >
+                      <Text style={[s.currencyOptionText, isSel && s.currencyOptionTextActive]}>
+                        {curr.label}
+                      </Text>
+                      {isSel && (
+                        <Ionicons name="checkmark" size={18} color={colors.primary} />
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            </Pressable>
+          </KeyboardAvoidingView>
+        </Pressable>
+      </Modal>
 
       {/* Restore Backup Modal */}
       <Modal
@@ -902,6 +1189,64 @@ const profileStyles = (
       color: "#fff",
       fontSize: 15,
       fontFamily: "Inter_600SemiBold",
+    },
+    modalOverlay: {
+      flex: 1,
+      justifyContent: "flex-end",
+      backgroundColor: "rgba(0,0,0,0.5)",
+    },
+    modalContainer: {
+      width: "100%",
+      maxHeight: "70%",
+    },
+    modalContent: {
+      backgroundColor: colors.card,
+      borderTopLeftRadius: 24,
+      borderTopRightRadius: 24,
+      padding: 24,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      paddingBottom: Platform.OS === "ios" ? 40 : 24,
+    },
+    modalHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginBottom: 16,
+    },
+    modalTitle: {
+      fontSize: 18,
+      fontFamily: "Inter_700Bold",
+      color: colors.foreground,
+    },
+    currencyList: {
+      maxHeight: 320,
+    },
+    currencyOptionRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingVertical: 14,
+      paddingHorizontal: 16,
+      borderRadius: 12,
+      marginBottom: 8,
+      backgroundColor: colors.background + "20",
+    },
+    currencyOptionRowActive: {
+      backgroundColor: colors.primary + "12",
+    },
+    currencyOptionText: {
+      fontSize: 15,
+      fontFamily: "Inter_500Medium",
+      color: colors.foreground,
+    },
+    currencyOptionTextActive: {
+      fontFamily: "Inter_600SemiBold",
+      color: colors.primary,
+    },
+    rowValue: {
+      fontSize: 14,
+      fontFamily: "Inter_400Regular",
     },
   });
 };

@@ -46,14 +46,15 @@ interface BalanceCardProps {
   isDark: boolean;
   primaryColor: string;
   primaryDarkColor: string;
+  currency?: string;
 }
 
 function fmt(n: number): string {
-  return Math.round(n).toLocaleString("en-IN");
+  return Math.round(n).toLocaleString();
 }
 
 export const BalanceCard = React.forwardRef<View, BalanceCardProps>(
-  ({ totalBalance, budgetLimit, spent, spentPct, spentPctRaw, isDark, primaryColor, primaryDarkColor }, ref) => {
+  ({ totalBalance, budgetLimit, spent, spentPct, spentPctRaw, isDark, primaryColor, primaryDarkColor, currency = "₹" }, ref) => {
     const [displayMode, setDisplayMode] = useState<"pct" | "spent" | "remaining">("pct");
 
     const handlePress = async () => {
@@ -66,7 +67,7 @@ export const BalanceCard = React.forwardRef<View, BalanceCardProps>(
     };
 
     return (
-      <View ref={ref} collapsable={false}>
+      <View ref={ref} collapsable={false} style={{ marginBottom: 22 }}>
         <LinearGradient
           colors={[primaryColor, primaryDarkColor]}
           start={{ x: 0, y: 0 }}
@@ -77,7 +78,7 @@ export const BalanceCard = React.forwardRef<View, BalanceCardProps>(
               shadowColor: isDark ? "transparent" : primaryDarkColor,
             },
           ]}
-          accessibilityLabel={`Total balance is ₹${fmt(totalBalance)}. ${
+          accessibilityLabel={`Total balance is ${currency}${fmt(totalBalance)}. ${
             budgetLimit > 0 ? `${spentPct}% of limit used` : ""
           }`}
           accessibilityRole="summary"
@@ -87,11 +88,11 @@ export const BalanceCard = React.forwardRef<View, BalanceCardProps>(
           <View style={s.balanceRow}>
             <View style={s.balanceLeft}>
               <Text style={s.balLabel}>Total Balance</Text>
-              <Text style={s.balAmount}>₹{fmt(totalBalance)}</Text>
+              <Text style={s.balAmount}>{currency}{fmt(totalBalance)}</Text>
               {budgetLimit > 0 && (
                 <View style={s.vsBadge}>
                   <Text style={s.vsText}>
-                    ₹{fmt(spent)} spent · {spentPct}% of limit used
+                    {currency}{fmt(spent)} spent · {spentPct}% of limit used
                   </Text>
                 </View>
               )}
@@ -112,13 +113,13 @@ export const BalanceCard = React.forwardRef<View, BalanceCardProps>(
                       adjustsFontSizeToFit
                       minimumFontScale={0.75}
                     >
-                      {budgetLimit > 0 ? `of ₹${fmt(budgetLimit)} limit` : "set salary in settings"}
+                      {budgetLimit > 0 ? `of ${currency}${fmt(budgetLimit)} limit` : "set salary in settings"}
                     </Text>
                   </>
                 )}
                 {displayMode === "spent" && (
                   <>
-                    <Text style={[s.ringPct, { fontSize: 13 }]}>₹{fmt(spent)}</Text>
+                    <Text style={[s.ringPct, { fontSize: 13 }]}>{currency}{fmt(spent)}</Text>
                     <Text
                       style={s.ringLimit}
                       numberOfLines={1}
@@ -130,7 +131,7 @@ export const BalanceCard = React.forwardRef<View, BalanceCardProps>(
                 )}
                 {displayMode === "remaining" && (
                   <>
-                    <Text style={[s.ringPct, { fontSize: 12 }]}>₹{fmt(Math.max(budgetLimit - spent, 0))}</Text>
+                    <Text style={[s.ringPct, { fontSize: 12 }]}>{currency}{fmt(Math.max(budgetLimit - spent, 0))}</Text>
                     <Text
                       style={s.ringLimit}
                       numberOfLines={1}
@@ -155,7 +156,6 @@ const s = StyleSheet.create({
   balanceCard: {
     borderRadius: 28,
     padding: 22,
-    marginBottom: 22,
     overflow: "hidden",
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.2,

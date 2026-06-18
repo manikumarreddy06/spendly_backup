@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import { NativeAdCard } from "@/components/NativeAdCard";
 import * as Haptics from "expo-haptics";
 import * as Linking from "expo-linking";
 import { LinearGradient } from "expo-linear-gradient";
@@ -31,6 +32,7 @@ import {
   formatGroupName,
   getGroupInviteCode,
   parseGroupInviteCode,
+  useCurrency,
 } from "@/context/AppContext";
 import { useColors } from "@/hooks/useColors";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -51,6 +53,7 @@ function SplitScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const currency = useCurrency();
   const { splitGroups, createSplitGroup, deleteSplitGroup, getOweSummary, joinGroupFromInvite, profile, getBalances, refreshGroup, syncStatus } = useApp();
 
   const [modalVisible, setModalVisible] = useState(false);
@@ -173,6 +176,18 @@ function SplitScreen() {
       return 0;
     });
   }, [filteredGroups, getBalances, myName]);
+
+  const listData = useMemo(() => {
+    const result: (SplitGroup | { id: string; isAd: boolean })[] = [];
+    sortedGroups.forEach((g, idx) => {
+      result.push(g);
+      // Inject an ad card after the 3rd group, and then every 4 groups
+      if ((idx + 1) % 3 === 0) {
+        result.push({ id: `ad-${g.id}`, isAd: true });
+      }
+    });
+    return result;
+  }, [sortedGroups]);
 
   const handleSummaryFilter = (mode: 'all' | 'owe' | 'owed') => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -514,8 +529,8 @@ function SplitScreen() {
       ) : (
         <FlatList
           style={s.list}
-          data={sortedGroups}
-          keyExtractor={(g) => g.id}
+          data={listData}
+          keyExtractor={(item) => item.id}
           contentContainerStyle={{ padding: 16, paddingBottom: tabClearance + 16 }}
           showsVerticalScrollIndicator={false}
           refreshControl={
@@ -542,7 +557,7 @@ function SplitScreen() {
                     style={[s.dbCol, filterMode === 'owed' && s.dbColActive]}
                   >
                     <Text style={[s.dbLabel, filterMode === 'owed' && { color: colors.primary }]}>YOU ARE OWED</Text>
-                    <Text style={[s.dbAmount, { color: colors.primary }]}>₹{totalOwed.toLocaleString("en-IN")}</Text>
+                    <Text style={[s.dbAmount, { color: colors.primary }]}>{currency}{totalOwed.toLocaleString()}</Text>
                   </TouchableOpacity>
                   <View style={s.dbDivider} />
                   <TouchableOpacity
@@ -550,7 +565,7 @@ function SplitScreen() {
                     style={[s.dbCol, filterMode === 'owe' && s.dbColActive]}
                   >
                     <Text style={[s.dbLabel, filterMode === 'owe' && { color: colors.destructive }]}>YOU OWE</Text>
-                    <Text style={[s.dbAmount, { color: colors.destructive }]}>₹{totalOwe.toLocaleString("en-IN")}</Text>
+                    <Text style={[s.dbAmount, { color: colors.destructive }]}>{currency}{totalOwe.toLocaleString()}</Text>
                   </TouchableOpacity>
                   <View style={s.dbDivider} />
                   <TouchableOpacity
@@ -562,7 +577,7 @@ function SplitScreen() {
                       s.dbAmount,
                       { color: netBalance > 0 ? colors.primary : netBalance < 0 ? colors.destructive : colors.mutedForeground }
                     ]}>
-                      {netBalance > 0 ? "+" : netBalance < 0 ? "-" : ""}₹{Math.abs(netBalance).toLocaleString("en-IN")}
+                      {netBalance > 0 ? "+" : netBalance < 0 ? "-" : ""}{currency}{Math.abs(netBalance).toLocaleString()}
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -632,7 +647,11 @@ function SplitScreen() {
               <Text style={s.searchEmptySub}>Try checking the spelling or typing a different name.</Text>
             </View>
           }
-          renderItem={({ item: group }) => {
+          renderItem={({ item }) => {
+            if ("isAd" in item) {
+              return <NativeAdCard placement="insights" noPadding={true} />;
+            }
+            const group = item as SplitGroup;
             const { name: cleanName, emoji, coverColor } = parseGroupName(group.name);
             const groupBalances = getBalances(group);
             const meInGroup = resolveMemberInGroup(myName, group.members) ?? myName;
@@ -729,9 +748,9 @@ function SplitScreen() {
                       { color: myGroupBalance > 0 ? colors.primary : myGroupBalance < 0 ? colors.destructive : colors.mutedForeground }
                     ]}>
                       {myGroupBalance > 0 
-                        ? `You get ₹${myGroupBalance.toFixed(0)}` 
+                        ? `You get ${currency}${myGroupBalance.toFixed(0)}` 
                         : myGroupBalance < 0 
-                        ? `You owe ₹${Math.abs(myGroupBalance).toFixed(0)}` 
+                        ? `You owe ${currency}${Math.abs(myGroupBalance).toFixed(0)}` 
                         : "All settled"}
                     </Text>
                   </View>

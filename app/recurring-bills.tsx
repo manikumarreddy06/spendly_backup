@@ -14,7 +14,7 @@ import {
 } from "react-native";
 import * as Haptics from "expo-haptics";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useApp, Expense } from "@/context/AppContext";
+import { useApp, Expense, useCurrency } from "@/context/AppContext";
 import { useColors } from "@/hooks/useColors";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { resolveExpenseMeta } from "@/constants/categories";
@@ -74,6 +74,7 @@ function RecurringBillsScreen() {
   const router = useRouter();
   
   const { expenses, editExpense, deleteRecurringExpenseSeries, customCategories } = useApp();
+  const currency = useCurrency();
 
   // Load parent recurring items
   const recurringItems = useMemo(() => {
@@ -151,53 +152,54 @@ function RecurringBillsScreen() {
 
   const s = styles(colors, topPad, bottomPad);
 
-  const renderItem = ({ item }: { item: typeof recurringItems[0] }) => {
-    const meta = resolveExpenseMeta(item.category, customCategories, colors);
-    const dateFormatted = item.nextDate.toLocaleDateString("en-IN", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    });
+    const renderItem = ({ item }: { item: typeof recurringItems[0] }) => {
+      const meta = resolveExpenseMeta(item.category, customCategories, colors);
+      const dateFormatted = item.nextDate.toLocaleDateString("en-IN", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
 
-    return (
-      <View style={s.billCard}>
-        <View style={s.cardHeader}>
-          <View style={[s.iconBox, { backgroundColor: meta.bg }]}>
-            <Ionicons name={meta.icon as any} size={18} color={meta.color} />
+      return (
+        <View style={s.billCard}>
+          <View style={s.cardHeader}>
+            <View style={[s.iconBox, { backgroundColor: meta.bg }]}>
+              <Ionicons name={meta.icon as any} size={18} color={meta.color} />
+            </View>
+            <View style={s.titleBox}>
+              <Text style={s.billTitle} numberOfLines={1}>
+                {item.description || meta.label}
+              </Text>
+              <Text style={s.billCategory}>{meta.label}</Text>
+            </View>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+              <Text style={s.billAmount}>{currency}{Math.round(item.amount).toLocaleString()}</Text>
+              <TouchableOpacity
+                onPress={() => handleManageOptions(item)}
+                activeOpacity={0.7}
+                style={{ padding: 4 }}
+              >
+                <Ionicons name="ellipsis-vertical" size={16} color={colors.mutedForeground} />
+              </TouchableOpacity>
+            </View>
           </View>
-          <View style={s.titleBox}>
-            <Text style={s.billTitle} numberOfLines={1}>
-              {item.description || meta.label}
+
+          <View style={s.cardDivider} />
+
+          <View style={s.cardFooter}>
+            <View style={s.nextBillBox}>
+              <Ionicons name="time-outline" size={14} color={colors.mutedForeground} />
+              <Text style={s.nextBillText}>
+                Next bill: <Text style={s.nextBillDate}>{dateFormatted}</Text>
+              </Text>
+            </View>
+            <Text style={[s.countdownBadge, item.daysLeft <= 3 ? s.countdownCritical : s.countdownNormal]}>
+              {item.daysLeft === 0 ? "Today" : item.daysLeft === 1 ? "Tomorrow" : `in ${item.daysLeft} days`}
             </Text>
-            <Text style={s.billCategory}>{meta.label}</Text>
           </View>
-          <Text style={s.billAmount}>₹{Math.round(item.amount).toLocaleString("en-IN")}</Text>
         </View>
-
-        <View style={s.cardDivider} />
-
-        <View style={s.cardFooter}>
-          <View style={s.nextBillBox}>
-            <Ionicons name="time-outline" size={14} color={colors.mutedForeground} />
-            <Text style={s.nextBillText}>
-              Next bill: <Text style={s.nextBillDate}>{dateFormatted}</Text>
-            </Text>
-          </View>
-          <Text style={[s.countdownBadge, item.daysLeft <= 3 ? s.countdownCritical : s.countdownNormal]}>
-            {item.daysLeft === 0 ? "Today" : item.daysLeft === 1 ? "Tomorrow" : `in ${item.daysLeft} days`}
-          </Text>
-        </View>
-
-        <TouchableOpacity
-          style={s.manageBtn}
-          onPress={() => handleManageOptions(item)}
-          activeOpacity={0.7}
-        >
-          <Ionicons name="ellipsis-horizontal" size={16} color={colors.mutedForeground} />
-        </TouchableOpacity>
-      </View>
-    );
-  };
+      );
+    };
 
   return (
     <View style={s.root}>

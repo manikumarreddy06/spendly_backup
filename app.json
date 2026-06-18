@@ -2,7 +2,7 @@
   "expo": {
     "name": "Spendly",
     "slug": "spendly-mobile",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "orientation": "portrait",
     "icon": "./assets/images/spendly_s_logo.png",
     "scheme": "spendly-mobile",
@@ -19,7 +19,7 @@
     },
     "android": {
       "package": "com.spendlyapp.personal",
-      "versionCode": 2,
+      "versionCode": 3,
       "jsEngine": "hermes",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/spendly_s_logo.png",

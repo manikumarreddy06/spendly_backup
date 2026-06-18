@@ -47,7 +47,7 @@ function RootLayoutNav() {
     }
   }, [loaded]);
 
-  // Listen for notification taps → navigate to /quick-log
+  // Listen for notification taps → navigate to correct route
   useEffect(() => {
     if (!Notifications) return;
     try {
@@ -56,6 +56,8 @@ function RootLayoutNav() {
           const data = response.notification.request.content.data as any;
           if (data?.route === '/quick-log') {
             router.push('/quick-log' as any);
+          } else if (data?.route === '/pending-transactions') {
+            router.push('/pending-transactions' as any);
           }
         }
       );
@@ -94,6 +96,7 @@ function RootLayoutNav() {
         <Stack.Screen name="settings" options={{ headerShown: false }} />
         <Stack.Screen name="profile" options={{ headerShown: false }} />
         <Stack.Screen name="add-category" options={{ headerShown: false }} />
+        <Stack.Screen name="pending-transactions" options={{ headerShown: false }} />
         <Stack.Screen
           name="quick-log"
           options={{

@@ -53,6 +53,14 @@ export async function requestNotificationPermissions(): Promise<boolean> {
         enableLights: true,
         enableVibration: true,
       });
+      await Notifications.setNotificationChannelAsync('transaction-review', {
+        name: 'Smart Transaction Detection',
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: '#18633f',
+        enableLights: true,
+        enableVibration: true,
+      });
     } catch (e) {
       console.warn('Failed to configure Android notification channel:', e);
     }
@@ -215,4 +223,59 @@ export async function applyReminderSettings(settings: ReminderSettings): Promise
     await cancelAllReminders();
   }
   await saveReminderSettings(settings);
+}
+
+const DETECT_NOTIFICATION_PREFIX = 'transaction-review-';
+
+/** Schedule daily recurring reminder for pending transaction reviews */
+export async function scheduleReviewReminder(timeStr: string): Promise<void> {
+  if (!Notifications) return;
+
+  await cancelReviewReminder();
+
+  const { hour, minute } = parseTime(timeStr);
+
+  try {
+    const trigger: any = Platform.select({
+      ios: {
+        type: Notifications.SchedulableTriggerInputTypes.CALENDAR,
+        hour,
+        minute,
+        repeats: true,
+      },
+      android: {
+        type: Notifications.SchedulableTriggerInputTypes.DAILY,
+        hour,
+        minute,
+      },
+    });
+
+    await Notifications.scheduleNotificationAsync({
+      identifier: `${DETECT_NOTIFICATION_PREFIX}daily`,
+      content: {
+        title: '🔍 Review your smart transactions',
+        body: 'You have bank or UPI transactions waiting for review. Tap to approve.',
+        data: { route: '/pending-transactions' },
+        sound: true,
+        ...(Platform.OS === 'android' && {
+          channelId: 'transaction-review',
+          color: '#18633f',
+          priority: Notifications.AndroidNotificationPriority.MAX,
+        }),
+      },
+      trigger,
+    });
+  } catch (e) {
+    console.warn('Error scheduling review reminder:', e);
+  }
+}
+
+/** Cancel daily recurring reminder for pending reviews */
+export async function cancelReviewReminder(): Promise<void> {
+  if (!Notifications) return;
+  try {
+    await Notifications.cancelScheduledNotificationAsync(`${DETECT_NOTIFICATION_PREFIX}daily`);
+  } catch (e) {
+    console.warn('Error cancelling review reminder:', e);
+  }
 }

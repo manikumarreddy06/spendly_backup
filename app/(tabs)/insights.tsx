@@ -14,7 +14,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { G, Rect, Circle, Text as SvgText } from "react-native-svg";
 import * as Haptics from "expo-haptics";
-import { useApp } from "@/context/AppContext";
+import { useApp, useCurrency } from "@/context/AppContext";
 import { useColors } from "@/hooks/useColors";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import {
@@ -44,6 +44,7 @@ function InsightsScreen() {
     getCurrentMonthExpenses,
     getSpentByCategory,
   } = useApp();
+  const currency = useCurrency();
 
   const [selectedCatKey, setSelectedCatKey] = useState<string | null>(null);
   const [healthExpanded, setHealthExpanded] = useState(false);
@@ -182,7 +183,7 @@ function InsightsScreen() {
                   <Ionicons name="wallet-outline" size={18} color={colors.primary} />
                 </View>
                 <Text style={s.statLabel}>This month</Text>
-                <Text style={s.statValue}>₹{fmt(currentMonth.total)}</Text>
+                <Text style={s.statValue}>{currency}{fmt(currentMonth.total)}</Text>
                 <Text style={s.statMeta}>{currentExps.length} expenses</Text>
               </View>
 
@@ -220,7 +221,7 @@ function InsightsScreen() {
                   <Ionicons name="analytics-outline" size={18} color="#3b82f6" />
                 </View>
                 <Text style={s.statLabel}>6-mo avg</Text>
-                <Text style={[s.statValue, { fontSize: 17 }]}>₹{fmt(avgMonthly)}</Text>
+                <Text style={[s.statValue, { fontSize: 17 }]}>{currency}{fmt(avgMonthly)}</Text>
                 <Text style={s.statMeta}>Per month</Text>
               </View>
             </View>
@@ -316,12 +317,12 @@ function InsightsScreen() {
                     <View style={s.burnRateContainer}>
                       <View style={s.burnRateItem}>
                         <Text style={s.burnRateLabel}>Daily Burn Rate</Text>
-                        <Text style={s.burnRateValue}>₹{fmt(metrics.dailyBurnRate)}</Text>
+                        <Text style={s.burnRateValue}>{currency}{fmt(metrics.dailyBurnRate)}</Text>
                       </View>
                       <View style={s.dividerVertical} />
                       <View style={s.burnRateItem}>
                         <Text style={s.burnRateLabel}>Projected Month Spend</Text>
-                        <Text style={s.burnRateValue}>₹{fmt(metrics.projectedSpend)}</Text>
+                        <Text style={s.burnRateValue}>{currency}{fmt(metrics.projectedSpend)}</Text>
                       </View>
                     </View>
                   </>
@@ -414,7 +415,7 @@ function InsightsScreen() {
                           <>
                             <Text style={s.centerLabel}>Total Spent</Text>
                             <Text style={s.centerValue} numberOfLines={1} adjustsFontSizeToFit>
-                              ₹{fmt(totalSpent)}
+                              {currency}{fmt(totalSpent)}
                             </Text>
                             <Text style={s.centerSub}>{currentExps.length} items</Text>
                           </>
@@ -429,7 +430,7 @@ function InsightsScreen() {
                                   {selectedCat.label}
                                 </Text>
                                 <Text style={s.centerValue} numberOfLines={1} adjustsFontSizeToFit>
-                                  ₹{fmt(selectedCat.amount)}
+                                  {currency}{fmt(selectedCat.amount)}
                                 </Text>
                                 <Text style={s.centerSub}>{pctVal}% of total</Text>
                               </>
@@ -502,7 +503,7 @@ function InsightsScreen() {
                             </View>
                             <View style={s.catRight}>
                               <Text style={[s.catAmt, { color: cat.color }]}>
-                                ₹{fmt(cat.amount)}
+                               {currency}{fmt(cat.amount)}
                               </Text>
                               <Text style={s.catPct}>{Math.round(pct)}%</Text>
                             </View>
@@ -539,7 +540,7 @@ function InsightsScreen() {
                         <View style={[s.catBarFill, { width: `${b.pct}%`, backgroundColor: color }]} />
                       </View>
                       <Text style={s.budgetMeta}>
-                        ₹{fmt(b.spent)} spent · ₹{fmt(Math.max(b.limit - b.spent, 0))} left
+                        {currency}{fmt(b.spent)} spent · {currency}{fmt(Math.max(b.limit - b.spent, 0))} left
                       </Text>
                     </View>
                   );

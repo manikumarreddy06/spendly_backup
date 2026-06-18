@@ -58,7 +58,7 @@ const DEFAULT_CAMPAIGNS: AdCampaign[] = [
 const DISMISS_KEY = "@spendly_ad_dismissed_time";
 const SETTINGS_KEY = "@spendly_ad_settings";
 
-export function NativeAdCard({ placement = "dashboard" }: { placement?: "dashboard" | "insights" }) {
+export function NativeAdCard({ placement = "dashboard", noPadding = false }: { placement?: "dashboard" | "insights"; noPadding?: boolean }) {
   const colors = useColors();
   const [isVisible, setIsVisible] = useState(false);
   const [adFreeMode, setAdFreeMode] = useState(false);
@@ -190,7 +190,7 @@ export function NativeAdCard({ placement = "dashboard" }: { placement?: "dashboa
 
   if (canShowAdMob) {
     return (
-      <Animated.View style={[styles.container, { opacity: fadeAnim }]}>
+      <Animated.View style={[styles.container, noPadding && { paddingHorizontal: 0 }, { opacity: fadeAnim }]}>
         <View style={styles.admobContainer}>
           {/* AdMob Banner Header */}
           <View style={styles.admobHeader}>
@@ -227,7 +227,7 @@ export function NativeAdCard({ placement = "dashboard" }: { placement?: "dashboa
   if (!activeCampaign) return null;
 
   return (
-    <Animated.View style={[styles.container, { opacity: fadeAnim }]}>
+    <Animated.View style={[styles.container, noPadding && { paddingHorizontal: 0 }, { opacity: fadeAnim }]}>
       <LinearGradient
         colors={activeCampaign.gradientColors}
         start={{ x: 0, y: 0 }}

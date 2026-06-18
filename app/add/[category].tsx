@@ -3,7 +3,7 @@ import DateTimePicker from "@react-native-community/datetimepicker";
 import * as Haptics from "expo-haptics";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect, useMemo } from "react";
 import {
   KeyboardAvoidingView,
   Modal,
@@ -24,11 +24,10 @@ import Animated, {
   withSpring,
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useApp, ExpenseCategory } from "@/context/AppContext";
+import { useApp, ExpenseCategory, useCurrency } from "@/context/AppContext";
 import { useColors } from "@/hooks/useColors";
 import { setLastExpenseCategory } from "@/lib/uxPrefs";
 import { evaluateMathExpression } from "@/lib/split";
-import { adsManager } from "@/lib/ads";
 
 const CAT_META: Record<
   ExpenseCategory,
@@ -55,12 +54,17 @@ export default function AddExpense() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const currency = useCurrency();
   const { category } = useLocalSearchParams<{ category: string }>();
-  const { addExpense, customCategories } = useApp();
+  const { addExpense, customCategories, expenses } = useApp();
 
   const cat = category || "others";
   const amountRef = useRef<TextInput>(null);
   const custom = customCategories.find((c) => c.id === cat);
+
+  const hasActiveRecurringBill = useMemo(() => {
+    return expenses.some(e => e.recurring === "monthly" && !e.recurringGroupId && e.category === cat);
+  }, [expenses, cat]);
   const meta = custom
     ? {
         label: custom.name,
@@ -78,6 +82,17 @@ export default function AddExpense() {
   const [descFocused, setDescFocused] = useState(false);
   const [success, setSuccess] = useState(false);
   const isSavingRef = useRef(false);
+
+  useEffect(() => {
+    const isCatRecur = !!custom?.isRecurring || expenses.some(
+      (e) => e.recurring === "monthly" && !e.recurringGroupId && e.category === cat
+    );
+    if (isCatRecur) {
+      setIsRecurring(true);
+    } else {
+      setIsRecurring(false);
+    }
+  }, [custom, cat, expenses]);
 
   const scale = useSharedValue(1);
   const checkScale = useSharedValue(0);
@@ -123,9 +138,6 @@ export default function AddExpense() {
       setSuccess(true);
       setTimeout(() => {
         router.replace("/(tabs)");
-        setTimeout(() => {
-          adsManager.showAdIfReady();
-        }, 100);
       }, 1200);
     } catch (e) {
       isSavingRef.current = false;
@@ -180,7 +192,7 @@ export default function AddExpense() {
               {/* Amount */}
               <Text style={s.label}>Amount</Text>
               <View style={[s.amtWrap, amtFocused && { borderColor: meta.gradient[0] }]}>
-                <Text style={[s.rupeeSymbol, { color: amtFocused ? meta.gradient[0] : colors.mutedForeground }]}>₹</Text>
+                <Text style={[s.rupeeSymbol, { color: amtFocused ? meta.gradient[0] : colors.mutedForeground }]}>{currency}</Text>
                 <TextInput
                   ref={amountRef}
                   testID="input-amount"
@@ -210,7 +222,7 @@ export default function AddExpense() {
                     return (
                       <View style={s.mathPreviewContainer}>
                         <Ionicons name="calculator-outline" size={12} color={meta.gradient[0]} />
-                        <Text style={[s.mathPreviewText, { color: meta.gradient[0] }]}>Total: ₹{Math.round(resolved).toLocaleString("en-IN")}</Text>
+                        <Text style={[s.mathPreviewText, { color: meta.gradient[0] }]}>Total: {currency}{Math.round(resolved).toLocaleString()}</Text>
                       </View>
                     );
                   }
@@ -331,6 +343,15 @@ export default function AddExpense() {
                   thumbColor={isRecurring ? meta.gradient[0] : colors.mutedForeground}
                 />
               </View>
+
+              {isRecurring && hasActiveRecurringBill && (
+                <View style={s.recurringAlert}>
+                  <Ionicons name="information-circle" size={16} color={meta.gradient[0]} />
+                  <Text style={s.recurringAlertText}>
+                    This category already has an active recurring bill setup. It logs automatically every month.
+                  </Text>
+                </View>
+              )}
 
               <Animated.View style={animStyle}>
                 <TouchableOpacity
@@ -574,5 +595,24 @@ const addStyles = (
     mathPreviewText: {
       fontSize: 12,
       fontFamily: 'Inter_600SemiBold',
+    },
+    recurringAlert: {
+      flexDirection: "row",
+      alignItems: "center",
+      backgroundColor: colors.primary + "12",
+      borderRadius: 12,
+      padding: 12,
+      borderWidth: 1,
+      borderColor: colors.primary + "20",
+      marginTop: 4,
+      marginBottom: 20,
+      gap: 8,
+    },
+    recurringAlertText: {
+      flex: 1,
+      fontSize: 12,
+      fontFamily: "Inter_400Regular",
+      color: colors.foreground,
+      lineHeight: 16,
     },
   });

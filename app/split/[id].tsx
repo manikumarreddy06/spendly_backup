@@ -24,13 +24,14 @@ import {
   RefreshControl,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useApp, SplitExpense, SplitMode, parseGroupName, LastDeletedItem } from "@/context/AppContext";
+import { useApp, SplitExpense, SplitMode, parseGroupName, LastDeletedItem, useCurrency } from "@/context/AppContext";
 import { useColors } from "@/hooks/useColors";
 import { formatTable, formatKeyValue } from "@/lib/tableFormatter";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { SUPABASE_ENABLED } from "@/lib/config";
-import { adsManager } from "@/lib/ads";
 import { exportFile, escapeCSVCell } from "@/lib/csvExporter";
+import { exportGroupLedgerPDF } from "@/lib/pdfExporter";
+import { SUPPORTED_CURRENCIES } from "@/constants/currencies";
 import {
   getExpenseMemberShare,
   isExpenseSettledFor,
@@ -61,6 +62,7 @@ function SplitGroupDetail() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const currency = useCurrency();
   const { id } = useLocalSearchParams<{ id: string }>();
   const {
     splitGroups,
@@ -370,7 +372,7 @@ function SplitGroupDetail() {
       } else if (splitMode === "custom") {
         const total = Object.values(shares).reduce((s, v) => s + v, 0);
         if (Math.abs(total - amt) > 1) {
-          Alert.alert("Amounts don't add up", `Total: ₹${total}. Must equal ₹${amt}.`);
+          Alert.alert("Amounts don't add up", `Total: ${currency}${total}. Must equal ${currency}${amt}.`);
           return;
         }
       } else if (splitMode === "shares") {
@@ -432,8 +434,8 @@ function SplitGroupDetail() {
     const memberBalances: string[][] = [];
     group.members.forEach((m) => {
       const bal = balances[m] ?? 0;
-      if (bal > 0) memberBalances.push([m, "gets back", `\u20b9${bal.toFixed(0)}`]);
-      else if (bal < 0) memberBalances.push([m, "owes", `\u20b9${Math.abs(bal).toFixed(0)}`]);
+      if (bal > 0) memberBalances.push([m, "gets back", `${currency}${bal.toFixed(0)}`]);
+      else if (bal < 0) memberBalances.push([m, "owes", `${currency}${Math.abs(bal).toFixed(0)}`]);
       else memberBalances.push([m, "settled", "0"]);
     });
 
@@ -463,6 +465,7 @@ function SplitGroupDetail() {
 
   const shareCSVLedger = async () => {
     try {
+      const currencyCode = SUPPORTED_CURRENCIES.find(c => c.symbol === currency)?.code || "INR";
       const totalGroupSpend = (group.expenses || [])
         .filter((e) => e.category !== "settlement")
         .reduce((sum, e) => sum + e.totalAmount, 0);
@@ -472,13 +475,13 @@ function SplitGroupDetail() {
         ["Group Name", cleanName],
         ["Members", group.members.join("; ")],
         ["Invite Code", group.id],
-        ["Total Group Spend (INR)", totalGroupSpend.toFixed(2)],
+        [`Total Group Spend (${currencyCode})`, totalGroupSpend.toFixed(2)],
         [],
       ];
 
       const balanceRows = [
         ["--- MEMBER BALANCES ---"],
-        ["Member", "Status", "Amount (INR)"],
+        ["Member", "Status", `Amount (${currencyCode})`],
         ...group.members.map((m) => {
           const bal = balances[m] ?? 0;
           if (bal > 0) return [m, "gets back", bal.toFixed(2)];
@@ -489,7 +492,7 @@ function SplitGroupDetail() {
       ];
 
       const expenseHeader = ["--- DETAILED EXPENSES LOG ---"];
-      const expenseCols = ["Date", "Description", "Category", "Paid By", "Total Amount (INR)", "Split Mode"];
+      const expenseCols = ["Date", "Description", "Category", "Paid By", `Total Amount (${currencyCode})`, "Split Mode"];
       const expenseRows = (group.expenses || []).map((e) => {
         const dateStr = `="${new Date(e.date).toISOString().split("T")[0]}"`;
         const catLabel = e.category === "settlement" ? "Settlement" : getCategoryVisuals(e.category || "others").label;
@@ -524,6 +527,15 @@ function SplitGroupDetail() {
     }
   };
 
+  const sharePDFLedger = async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    try {
+      await exportGroupLedgerPDF(group, balances, cleanName, currency);
+    } catch (err: any) {
+      Alert.alert("Export Failed", err.message || "Could not export group PDF ledger");
+    }
+  };
+
   const handleShare = async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     Alert.alert(
@@ -533,6 +545,7 @@ function SplitGroupDetail() {
         { text: "Cancel", style: "cancel" },
         { text: "Share Text Summary", onPress: shareTextSummary },
         { text: "Export Group CSV Ledger", onPress: shareCSVLedger },
+        { text: "Export Group PDF Ledger", onPress: sharePDFLedger },
       ]
     );
   };
@@ -598,7 +611,7 @@ function SplitGroupDetail() {
   const handleDeleteExpense = (exp: SplitExpense) => {
     Alert.alert(
       "Delete Expense",
-      `Delete "${exp.description}" (₹${exp.totalAmount.toLocaleString("en-IN")})?`,
+      `Delete "${exp.description}" (${currency}${exp.totalAmount.toLocaleString()})?`,
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -671,7 +684,7 @@ function SplitGroupDetail() {
     const remAmt = amtValue - allocatedSum;
     isBalanced = Math.abs(remAmt) < 0.01;
     if (!isBalanced) {
-      remainingText = `${remAmt > 0 ? "Remaining" : "Over allocated"}: ₹${Math.abs(remAmt).toLocaleString("en-IN")} of ₹${amtValue.toLocaleString("en-IN")}`;
+      remainingText = `${remAmt > 0 ? "Remaining" : "Over allocated"}: ${currency}${Math.abs(remAmt).toLocaleString()} of ${currency}${amtValue.toLocaleString()}`;
     } else {
       remainingText = "Balanced: All expenses allocated";
     }
@@ -732,9 +745,9 @@ function SplitGroupDetail() {
               {/* Balance hint */}
               <Text style={s.balanceHint}>
                 {myBalance > 0 
-                  ? `You are owed ₹${myBalance.toFixed(0)}` 
+                  ? `You are owed ${currency}${myBalance.toFixed(0)}` 
                   : myBalance < 0 
-                    ? `You owe ₹${Math.abs(myBalance).toFixed(0)}` 
+                    ? `You owe ${currency}${Math.abs(myBalance).toFixed(0)}` 
                     : "All settled up"
                 }
               </Text>
@@ -782,10 +795,10 @@ function SplitGroupDetail() {
                   let textContent = "";
                   let highlightColor = colors.foreground;
                   if (isIowe) {
-                    textContent = `You owe ${payment.to} ₹${Math.round(payment.amount).toLocaleString("en-IN")}`;
+                    textContent = `You owe ${payment.to} ${currency}${Math.round(payment.amount).toLocaleString()}`;
                     highlightColor = colors.destructive;
                   } else if (isIget) {
-                    textContent = `${payment.from} pays You ₹${Math.round(payment.amount).toLocaleString("en-IN")}`;
+                    textContent = `${payment.from} pays You ${currency}${Math.round(payment.amount).toLocaleString()}`;
                     highlightColor = colors.primary;
                   }
 
@@ -844,7 +857,7 @@ function SplitGroupDetail() {
                   {showOtherDebts && (
                     <View style={s.collapsibleContent}>
                       {otherDebts.map((payment, index) => {
-                        const textContent = `${payment.from} pays ${payment.to} ₹${Math.round(payment.amount).toLocaleString("en-IN")}`;
+                        const textContent = `${payment.from} pays ${payment.to} ${currency}${Math.round(payment.amount).toLocaleString()}`;
                         return (
                           <View key={`${payment.from}-${payment.to}-${index}`} style={[s.simplifiedDebtRow, index > 0 && s.simplifiedDebtRowDivider]}>
                             <View style={s.simplifiedDebtTextCol}>
@@ -921,7 +934,7 @@ function SplitGroupDetail() {
             <Text style={s.sectionTitle}>Group Spending Breakdown</Text>
             <View style={s.breakdownCard}>
               <Text style={s.breakdownTotalText}>
-                Total Spent: <Text style={s.boldText}>₹{totalSpent.toLocaleString("en-IN")}</Text>
+                Total Spent: <Text style={s.boldText}>{currency}{totalSpent.toLocaleString()}</Text>
               </Text>
               <View style={s.breakdownBarsWrap}>
                 {Object.entries(categoryTotals).map(([cat, amount]) => {
@@ -934,7 +947,7 @@ function SplitGroupDetail() {
                           {catMeta.emoji} {catMeta.label}
                         </Text>
                         <Text style={s.breakdownValue}>
-                          ₹{amount.toLocaleString("en-IN")} ({pct.toFixed(0)}%)
+                          {currency}{amount.toLocaleString()} ({pct.toFixed(0)}%)
                         </Text>
                       </View>
                       <View style={s.progressBarBackground}>
@@ -1082,7 +1095,7 @@ function SplitGroupDetail() {
                         {exp.description}
                       </Text>
                       <Text style={s.expenseMeta}>
-                        Settled ₹{exp.totalAmount.toLocaleString("en-IN")}
+                        Settled {currency}{exp.totalAmount.toLocaleString()}
                       </Text>
                     </View>
 
@@ -1154,7 +1167,7 @@ function SplitGroupDetail() {
                     
                     <View style={s.timelineCardMetaRow}>
                       <Text style={s.expenseMeta}>
-                        {exp.paidBy} paid <Text style={s.boldText}>₹{exp.totalAmount.toLocaleString("en-IN")}</Text> · Split among {totalSplitCount}
+                        {exp.paidBy} paid <Text style={s.boldText}>{currency}{exp.totalAmount.toLocaleString()}</Text> · Split among {totalSplitCount}
                       </Text>
                       <Text style={s.expenseDate}>
                         {new Date(exp.date).toLocaleDateString("en-IN", { month: "short", day: "numeric" })}
@@ -1177,7 +1190,7 @@ function SplitGroupDetail() {
                     {others.map((member) => {
                       const isSettled = isExpenseSettledFor(exp, member, group.members);
                       const share = getExpenseMemberShare(exp, member, group.members);
-                      const shareText = `₹${Math.round(share).toLocaleString("en-IN")}`;
+                      const shareText = `${currency}${Math.round(share).toLocaleString()}`;
 
                       return (
                         <View key={member} style={s.owesRowItem}>
@@ -1258,7 +1271,7 @@ function SplitGroupDetail() {
                     <Ionicons name="arrow-forward-outline" size={12} color={colors.destructive} style={{ marginHorizontal: 6 }} />
                     <Text style={s.creditorName}>{payment.to}</Text>
                   </View>
-                  <Text style={s.debtAmount}>owes ₹{payment.amount.toLocaleString("en-IN")}</Text>
+                  <Text style={s.debtAmount}>owes {currency}{payment.amount.toLocaleString()}</Text>
                 </View>
                 
                 <TouchableOpacity
@@ -1297,7 +1310,7 @@ function SplitGroupDetail() {
                   </View>
 
                   <Text style={[s.memberBalanceText, { color: bal > 0 ? colors.primary : bal < 0 ? colors.destructive : colors.mutedForeground }]}>
-                    {bal === 0 ? "" : bal > 0 ? "+" : "-"}₹{Math.abs(bal).toFixed(0)}
+                    {bal === 0 ? "" : bal > 0 ? "+" : "-"}{currency}{Math.abs(bal).toFixed(0)}
                   </Text>
 
                   {group.members.length > 1 && !isSameMember(member, myName, group.members) && (
@@ -1362,7 +1375,7 @@ function SplitGroupDetail() {
 
           <Text style={s.fLabel}>Settlement Amount</Text>
           <View style={s.fAmtWrap}>
-            <Text style={s.fRupee}>₹</Text>
+            <Text style={s.fRupee}>{currency}</Text>
             <TextInput
               style={s.fAmtInput}
               keyboardType="numeric"
@@ -1376,7 +1389,7 @@ function SplitGroupDetail() {
             onPress={() => {
               const parsedVal = parseFloat(settleAmountInput) || 0;
               if (parsedVal <= 0) {
-                Alert.alert("Invalid Amount", "Please enter a settlement amount greater than ₹0.");
+                Alert.alert("Invalid Amount", `Please enter a settlement amount greater than ${currency}0.`);
                 return;
               }
               handleSettleAll(settleFrom, settleTo, parsedVal);
@@ -1408,7 +1421,7 @@ function SplitGroupDetail() {
           <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={{ maxHeight: 480 }}>
             {/* Amount input block at top */}
             <View style={s.largeAmountBlock}>
-              <Text style={s.largeRupeeSymbol}>₹</Text>
+              <Text style={s.largeRupeeSymbol}>{currency}</Text>
               <TextInput
                 testID="input-split-amount"
                 style={s.largeAmtInput}
@@ -1432,12 +1445,12 @@ function SplitGroupDetail() {
               if (totalAmt.trim() && (totalAmt.includes('+') || totalAmt.includes('-') || totalAmt.includes('*') || totalAmt.includes('/'))) {
                 const resolved = evaluateMathExpression(totalAmt);
                 if (resolved !== null && !isNaN(resolved) && resolved > 0) {
-                  return (
-                    <View style={s.mathPreviewContainer}>
-                      <Ionicons name="calculator-outline" size={12} color={colors.primary} />
-                      <Text style={s.mathPreviewText}>Total: ₹{Math.round(resolved).toLocaleString("en-IN")}</Text>
-                    </View>
-                  );
+                   return (
+                     <View style={s.mathPreviewContainer}>
+                       <Ionicons name="calculator-outline" size={12} color={colors.primary} />
+                       <Text style={s.mathPreviewText}>Total: {currency}{Math.round(resolved).toLocaleString()}</Text>
+                     </View>
+                   );
                 }
               }
               return null;
@@ -1629,7 +1642,7 @@ function SplitGroupDetail() {
                       <View style={s.splitShareInputWrap}>
                         {splitMode === "custom" && (
                           <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.mutedForeground, marginRight: 2 }}>
-                            ₹
+                            {currency}
                           </Text>
                         )}
                         {splitMode === "shares" ? (

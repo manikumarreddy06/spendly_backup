@@ -35,8 +35,8 @@ export function useCategoryState() {
     loadCategories();
   }, []);
 
-  const addCustomCategory = useCallback(async (name: string, color: string, icon: string) => {
-    const newCat: CustomCategory = { id: genId(), name, color, icon };
+  const addCustomCategory = useCallback(async (name: string, color: string, icon: string, isRecurring?: boolean) => {
+    const newCat: CustomCategory = { id: genId(), name, color, icon, isRecurring };
     setCustomCategoriesState((prev) => {
       const updated = [newCat, ...prev];
       AsyncStorage.setItem("custom_categories", JSON.stringify(updated));
