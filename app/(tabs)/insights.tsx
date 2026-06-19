@@ -25,8 +25,6 @@ import {
   calculateFinancialMetrics,
 } from "@/lib/insights";
 
-const GREEN = "#18633f";
-
 function fmt(n: number): string {
   return Math.round(n).toLocaleString("en-IN");
 }
@@ -52,7 +50,7 @@ function InsightsScreen() {
   const topPad = Platform.OS === "web" ? 67 : insets.top;
   const tabClearance = 72 + (Platform.OS === "ios" ? insets.bottom : 12);
 
-  const monthData = useMemo(() => getLast6Months(allExpenses), [allExpenses]);
+  const monthData = useMemo(() => getLast6Months(allExpenses.filter(e => e.type !== "income")), [allExpenses]);
   const currentExps = useMemo(
     () => getCurrentMonthExpenses(),
     [allExpenses, getCurrentMonthExpenses]

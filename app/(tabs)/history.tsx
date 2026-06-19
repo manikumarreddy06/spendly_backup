@@ -58,6 +58,7 @@ interface HistoryItem {
   isDebit: boolean;
   subtitle: string;
   isRecurring?: boolean;
+  type?: "income" | "expense";
 }
 
 type Section = { title: string; total: number; data: HistoryItem[] };
@@ -195,7 +196,7 @@ function HistoryScreen() {
   const myName = profile?.name ?? "You";
 
   const allItems = useMemo<HistoryItem[]>(() => {
-    // 1. Personal expenses (always Debit)
+    // 1. Personal expenses (Debit for expenses, Credit for income)
     const personal: HistoryItem[] = expenses.map((e) => {
       const custom = customCategories.find((c) => c.id === e.category);
       const hasActiveRecurringInCat = expenses.some(
@@ -210,9 +211,10 @@ function HistoryScreen() {
         date: e.date,
         category: e.category,
         amount: e.amount,
-        isDebit: true,
+        isDebit: e.type !== "income",
         subtitle: "Personal",
         isRecurring: e.recurring === "monthly" || !!e.recurringGroupId || !!custom?.isRecurring || hasActiveRecurringInCat || matchesCommonRecurringName,
+        type: e.type,
       };
     });
 
@@ -347,7 +349,11 @@ function HistoryScreen() {
     return result;
   }, [sections]);
 
-  const totalIncome = profile?.salary ?? 0;
+  const loggedIncome = useMemo(() => {
+    return filtered.filter(e => !e.isDebit && e.type === "income").reduce((s, e) => s + e.amount, 0);
+  }, [filtered]);
+
+  const totalIncome = loggedIncome > 0 ? loggedIncome : (profile?.salary ?? 0);
 
   const totalExpense = useMemo(() => {
     return filtered.filter(e => e.isDebit).reduce((s, e) => s + e.amount, 0);
@@ -606,7 +612,7 @@ function HistoryScreen() {
         <Text style={[s.txAmt, { color: isDebit ? colors.destructive : "#10b981" }]}>
           {isDebit ? "-" : "+"}{currency}{exp.amount.toLocaleString()}
         </Text>
-        {isDebit && exp.category !== "settlement" ? (
+        {exp.category !== "settlement" && exp.subtitle === "Personal" ? (
           <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginLeft: 8 }}>
             <TouchableOpacity
               testID={`button-edit-${exp.id}`}
@@ -834,6 +840,18 @@ function HistoryScreen() {
           <Text style={s.emptyText}>
             {query || activeFilter ? "No matching transactions" : "No transactions yet"}
           </Text>
+          {!query && !activeFilter && (
+            <TouchableOpacity
+              style={[s.emptyCta, { backgroundColor: colors.primary }]}
+              onPress={() => router.push("/quick-log" as any)}
+              activeOpacity={0.85}
+              accessibilityLabel="Log your first expense"
+              accessibilityRole="button"
+            >
+              <Ionicons name="add-circle-outline" size={18} color="#fff" />
+              <Text style={s.emptyCtaText}>Log your first expense</Text>
+            </TouchableOpacity>
+          )}
         </View>
       ) : (
         <FlatList
@@ -1185,6 +1203,20 @@ const histStyles = (colors: ReturnType<typeof useColors>, topPad: number) => {
     txAmt: { fontSize: 14, fontFamily: "Inter_700Bold" },
     empty: { flex: 1, alignItems: "center", justifyContent: "center", gap: 14 },
     emptyText: { fontSize: 16, fontFamily: "Inter_500Medium", color: colors.mutedForeground },
+    emptyCta: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      paddingHorizontal: 20,
+      paddingVertical: 12,
+      borderRadius: 14,
+      marginTop: 8,
+    },
+    emptyCtaText: {
+      fontSize: 14,
+      fontFamily: "Inter_600SemiBold",
+      color: "#fff",
+    },
     overlay: {
       ...StyleSheet.absoluteFillObject,
       backgroundColor: "rgba(0,0,0,0.5)",

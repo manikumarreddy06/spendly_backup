@@ -45,6 +45,8 @@ import { getDashboardInsights } from "@/lib/insights";
 import { loadReminderSettings } from "@/hooks/useNotifications";
 
 import { BUILTIN_CATEGORIES, resolveExpenseMeta } from "@/constants/categories";
+import { SmartSuggestions } from "@/components/SmartSuggestions";
+import { recordDescription } from "@/lib/smartDescriptions";
 
 type CategoryTile = {
   key: string;
@@ -69,8 +71,6 @@ type ActivityItem = {
   sortDate: string;
   isRecurring?: boolean;
 };
-
-const GREEN = "#18633f";
 
 function fmt(n: number): string {
   return Math.round(n).toLocaleString("en-IN");
@@ -132,6 +132,7 @@ function buildRecentActivities(
       title: exp.description || meta.label,
       subtitle: formatActivityDate(exp.date),
       amount: exp.amount,
+      positive: exp.type === "income",
       icon: meta.icon,
       color: meta.color,
       bg: meta.bg,
@@ -225,16 +226,21 @@ function HomeScreen() {
     splitGroups,
     customCategories,
     getCurrentMonthTotal,
+    getCurrentMonthIncome,
     getSpentByCategory,
     budgetLimits,
     pendingTransactionCount,
     detectionSettings,
     syncDetectedTransactions,
+    addExpense,
+    addExpenseWithBudgetCheck,
   } = useApp();
 
   const salary = profile?.salary ?? 0;
   const spent = getCurrentMonthTotal();
-  const budgetLimit = salary > 0 ? salary : 0;
+  const loggedIncome = getCurrentMonthIncome();
+  const totalIncome = loggedIncome > 0 ? loggedIncome : salary;
+  const budgetLimit = totalIncome > 0 ? totalIncome : 0;
   const remaining = budgetLimit > 0 ? Math.max(budgetLimit - spent, 0) : 0;
   const spentPctRaw =
     budgetLimit > 0 ? Math.round((spent / budgetLimit) * 100) : 0;
@@ -541,7 +547,7 @@ function HomeScreen() {
         style={s.headerBg}
       />
       <View style={s.headerBlob} />
-      <View style={s.leavesWrap}>
+      <View style={s.leavesWrap} importantForAccessibility="no-hide-descendants" accessibilityElementsHidden>
         <Ionicons name="leaf" size={16} color="#86efac" style={{ transform: [{ rotate: "-40deg" }] }} />
         <Ionicons name="leaf" size={24} color="#4ade80" style={{ transform: [{ rotate: "-8deg" }], marginLeft: 4, marginTop: -8 }} />
         <Ionicons name="leaf" size={30} color="#22c55e" style={{ transform: [{ rotate: "18deg" }], marginLeft: 2, marginTop: -14 }} />
@@ -567,6 +573,8 @@ function HomeScreen() {
                   style={s.themeToggleBtn}
                   onPress={toggleTheme}
                   activeOpacity={0.8}
+                  accessibilityLabel={`Switch to ${isDark ? "light" : "dark"} mode`}
+                  accessibilityRole="button"
                 >
                   <Animated.View style={[StyleSheet.absoluteFill, s.themeIconWrap, { opacity: sunOpacity, transform: [{ rotate: themeRotate }] }]}>
                     <Ionicons name="sunny" size={20} color="#f59e0b" />
@@ -581,6 +589,8 @@ function HomeScreen() {
                     style={[s.settingsBtn, remindersEnabled && { backgroundColor: colors.primary + "12" }]}
                     onPress={() => setReminderModalVisible(true)}
                     activeOpacity={0.8}
+                    accessibilityLabel={remindersEnabled ? "Reminders enabled" : "Reminders disabled. Tap to configure"}
+                    accessibilityRole="button"
                   >
                     <Animated.View style={{ transform: [{ rotate: bellRotate }] }}>
                       <Ionicons 
@@ -615,7 +625,7 @@ function HomeScreen() {
         </Animated.View>
 
         {/* Smart Transaction Detection Card (Android Only) */}
-        {Platform.OS === "android" && (pendingTransactionCount > 0 || detectionSettings?.enabled) && (
+        {Platform.OS === "android" && pendingTransactionCount > 0 && (
           <Animated.View style={{ opacity: bodyOpacity, transform: [{ translateY: bodyTranslateY }] }}>
             <TouchableOpacity
               style={s.detectionCard}
@@ -675,6 +685,23 @@ function HomeScreen() {
             </TouchableOpacity>
           </Animated.View>
         )}
+
+        {/* Smart Suggestions (one-tap expense logging) */}
+        <Animated.View style={{ opacity: bodyOpacity, transform: [{ translateY: bodyTranslateY }] }}>
+          <SmartSuggestions
+            expenses={expenses}
+            customCategories={customCategories}
+            onLogExpense={async (data) => {
+              await addExpenseWithBudgetCheck({
+                category: data.category as ExpenseCategory,
+                amount: data.amount,
+                description: data.description,
+                date: new Date().toISOString(),
+                recurring: null,
+              });
+            }}
+          />
+        </Animated.View>
 
         <Animated.View style={{ opacity: bodyOpacity, transform: [{ translateY: bodyTranslateY }] }}>
           {/* Monthly Insight Hero Section */}
@@ -773,8 +800,21 @@ function HomeScreen() {
           horizontal
           pagingEnabled
           showsHorizontalScrollIndicator={false}
-          scrollEnabled={false}
           style={s.insightList}
+          onScroll={(e) => {
+            const offsetX = e.nativeEvent.contentOffset.x;
+            const pageWidth = screenWidth - 40;
+            if (pageWidth > 0) {
+              const newIndex = Math.round(offsetX / pageWidth);
+              if (newIndex >= 0 && newIndex < insights.length && newIndex !== activeInsight) {
+                setActiveInsight(newIndex);
+                dotAnimations.forEach((anim, i) => {
+                  Animated.spring(anim, { toValue: i === newIndex ? 1 : 0, useNativeDriver: false, speed: 20, bounciness: 4 }).start();
+                });
+              }
+            }
+          }}
+          scrollEventThrottle={16}
         >
           {insights.map((item, i) => (
             <View key={i} style={s.insightCard}>

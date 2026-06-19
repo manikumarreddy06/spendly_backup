@@ -40,6 +40,39 @@ export const BUILTIN_META = BUILTIN_CATEGORIES.reduce((acc, cat) => {
   return acc;
 }, {} as Record<ExpenseCategory, { label: string; icon: string; color: string; bg: string }>);
 
+// ── Income Categories ──────────────────────────────────────────────────────
+
+export type IncomeCategory =
+  | "salary"
+  | "freelance"
+  | "investment"
+  | "gifts"
+  | "refunds"
+  | "other_income";
+
+export interface BuiltinIncomeCategory {
+  key: IncomeCategory;
+  label: string;
+  icon: string;
+  color: string;
+  bg: string;
+  emoji: string;
+}
+
+export const BUILTIN_INCOME_CATEGORIES: BuiltinIncomeCategory[] = [
+  { key: "salary",        label: "Salary",       icon: "briefcase",      color: "#10b981", bg: "#e6f7f0", emoji: "💼" },
+  { key: "freelance",     label: "Freelance",    icon: "laptop-outline", color: "#059669", bg: "#e6f7f0", emoji: "💻" },
+  { key: "investment",    label: "Investment",   icon: "trending-up",    color: "#0d9488", bg: "#e6f7f0", emoji: "📈" },
+  { key: "gifts",         label: "Gifts",        icon: "gift",           color: "#16a34a", bg: "#e6f7f0", emoji: "🎁" },
+  { key: "refunds",       label: "Refunds",      icon: "return-up-back", color: "#22c55e", bg: "#e6f7f0", emoji: "↩️" },
+  { key: "other_income",  label: "Other Income", icon: "add-circle",     color: "#6b7280", bg: "#f0f2f5", emoji: "➕" },
+];
+
+export const BUILTIN_INCOME_META = BUILTIN_INCOME_CATEGORIES.reduce((acc, cat) => {
+  acc[cat.key] = { label: cat.label, icon: cat.icon, color: cat.color, bg: cat.bg };
+  return acc;
+}, {} as Record<IncomeCategory, { label: string; icon: string; color: string; bg: string }>);
+
 export type CatMeta = { label: string; icon: string; color: string; bg: string };
 
 export function resolveExpenseMeta(
@@ -63,6 +96,15 @@ export function resolveExpenseMeta(
       icon: custom.icon,
       color: custom.color,
       bg: custom.color + "18",
+    };
+  }
+  if (category && category in BUILTIN_INCOME_META) {
+    const meta = BUILTIN_INCOME_META[category as IncomeCategory];
+    return {
+      label: meta.label,
+      icon: meta.icon,
+      color: meta.color,
+      bg: meta.color + "18",
     };
   }
   const defaultColor = (colors && colors.mutedForeground) || "#6b7280";

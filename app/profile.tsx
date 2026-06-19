@@ -6,6 +6,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
+  LayoutAnimation,
   Platform,
   Pressable,
   ScrollView,
@@ -543,6 +544,7 @@ function ProfileScreen() {
             activeOpacity={0.7}
             onPress={async () => {
               await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+              LayoutAnimation.configureNext(LayoutAnimation.create(250, LayoutAnimation.Types.easeInEaseOut, LayoutAnimation.Properties.opacity));
               setBudgetsExpanded(!budgetsExpanded);
             }}
             style={s.collapsibleHeaderRow}

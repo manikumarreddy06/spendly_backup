@@ -26,7 +26,8 @@ import { useApp, ExpenseCategory, CustomCategory, useCurrency } from '@/context/
 import { useColors } from '@/hooks/useColors';
 import { getLastExpenseCategory, setLastExpenseCategory, getRecentCategories } from '@/lib/uxPrefs';
 import { evaluateMathExpression } from '@/lib/split';
-import { BUILTIN_CATEGORIES } from '@/constants/categories';
+import { BUILTIN_CATEGORIES, BUILTIN_INCOME_CATEGORIES } from '@/constants/categories';
+import { recordDescription, getAutocompleteSuggestions, getQuickRepeatTemplates, type FrequentDescription } from '@/lib/smartDescriptions';
 
 
 
@@ -77,11 +78,51 @@ const KEYWORD_TO_CATEGORY: { category: string; keywords: string[] }[] = [
   },
 ];
 
-function classifyText(text: string, customCategories: CustomCategory[]): string | null {
+const INCOME_KEYWORD_TO_CATEGORY: { category: string; keywords: string[] }[] = [
+  {
+    category: 'salary',
+    keywords: ['salary', 'paycheck', 'wages', 'stipend', 'pay', 'credited', 'payroll'],
+  },
+  {
+    category: 'freelance',
+    keywords: ['freelance', 'client', 'invoice', 'project', 'consulting', 'contract'],
+  },
+  {
+    category: 'investment',
+    keywords: ['dividend', 'interest', 'returns', 'profit', 'mutual fund', 'sip', 'stock', 'bond'],
+  },
+  {
+    category: 'gifts',
+    keywords: ['gift', 'birthday', 'bonus', 'reward', 'prize'],
+  },
+  {
+    category: 'refunds',
+    keywords: ['refund', 'reversal', 'cashback', 'reversal', 'returned', 'reimbursement'],
+  },
+];
+
+function classifyText(
+  text: string,
+  customCategories: CustomCategory[],
+  entryType: "expense" | "income" = "expense"
+): string | null {
   const normalized = text.toLowerCase().trim();
   if (!normalized) return null;
 
-  // First check custom categories
+  // Income mode: only check income keywords (no custom categories)
+  if (entryType === "income") {
+    for (const item of INCOME_KEYWORD_TO_CATEGORY) {
+      for (const kw of item.keywords) {
+        const regex = new RegExp(`\\b${kw}\\b`, 'i');
+        if (regex.test(normalized)) {
+          return item.category;
+        }
+      }
+    }
+    return null;
+  }
+
+  // Expense mode: check custom categories first
   for (const c of customCategories) {
     const catName = c.name.toLowerCase().trim();
     if (catName.length > 2) {
@@ -120,6 +161,7 @@ export default function QuickLogScreen() {
   const [selectedCategory, setSelectedCategory] = useState('food');
   const [description, setDescription] = useState('');
   const [isRecurring, setIsRecurring] = useState(false);
+  const [entryType, setEntryType] = useState<"expense" | "income">("expense");
 
   const hasActiveRecurringBill = useMemo(() => {
     return expenses.some(e => e.recurring === "monthly" && !e.recurringGroupId && e.category === selectedCategory);
@@ -130,6 +172,18 @@ export default function QuickLogScreen() {
   const [hasInitializedCategory, setHasInitializedCategory] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const isSavingRef = useRef(false);
+
+  // Smart descriptions: autocomplete & quick repeat
+  const [autocompleteResults, setAutocompleteResults] = useState<FrequentDescription[]>([]);
+  const [quickRepeatTemplates, setQuickRepeatTemplates] = useState<FrequentDescription[]>([]);
+  const autocompleteDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Load quick repeat templates on mount
+  useEffect(() => {
+    getQuickRepeatTemplates("expense")
+      .then(setQuickRepeatTemplates)
+      .catch(() => {});
+  }, []);
 
   // Success animation
   const successScale = useRef(new Animated.Value(0)).current;
@@ -147,6 +201,12 @@ export default function QuickLogScreen() {
   }, []);
 
   const allCategories: CategoryItem[] = useMemo(() => {
+    if (entryType === "income") {
+      return BUILTIN_INCOME_CATEGORIES.map(c => ({
+        ...c,
+        bg: colors.background !== '#f4faf6' ? c.color + '25' : c.bg,
+      }));
+    }
     const list = [
       ...BUILTIN_CATEGORIES.map(c => ({
         ...c,
@@ -163,7 +223,18 @@ export default function QuickLogScreen() {
       if (indexB !== -1) return 1;
       return 0;
     });
-  }, [colors.background, customCategories, recentKeys]);
+  }, [colors.background, customCategories, recentKeys, entryType]);
+
+  // Reset selected category when switching between expense/income
+  useEffect(() => {
+    if (entryType === "income") {
+      setSelectedCategory("salary");
+    } else {
+      setSelectedCategory("food");
+    }
+    setDescription("");
+    setAmount("");
+  }, [entryType]);
 
   // Load last used category and recent categories once on mount
   useEffect(() => {
@@ -259,9 +330,12 @@ export default function QuickLogScreen() {
         amount: parsed,
         description: description.trim() || activeCat.label,
         date: new Date().toISOString(),
+        type: entryType,
         recurring: isRecurring ? "monthly" : null,
       });
       await setLastExpenseCategory(selectedCategory);
+      // Track description frequency for smart autocomplete (non-blocking)
+      recordDescription(description.trim() || activeCat.label, selectedCategory, parsed, entryType).catch(() => {});
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setSaved(true);
 
@@ -285,7 +359,7 @@ export default function QuickLogScreen() {
       setSaving(false);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     }
-  }, [amount, selectedCategory, description, addExpense, dismiss]);
+  }, [amount, selectedCategory, description, addExpense, dismiss, entryType, activeCat]);
 
   const s = styles(colors, insets, isDark);
 
@@ -310,14 +384,50 @@ export default function QuickLogScreen() {
         <View style={s.header}>
           <View style={s.headerLeft}>
             <View style={[s.headerIcon, { backgroundColor: colors.primary + "18" }]}>
-              <Ionicons name="flash" size={18} color={colors.primary} />
+              <Ionicons name={entryType === "income" ? "trending-up" : "flash"} size={18} color={colors.primary} />
             </View>
-            <Text style={s.headerTitle}>Quick Log</Text>
+            <Text style={s.headerTitle}>{entryType === "income" ? "Add Income" : "Quick Log"}</Text>
           </View>
           <TouchableOpacity onPress={dismiss} style={s.closeBtn} activeOpacity={0.7}>
             <Ionicons name="close" size={20} color={colors.mutedForeground} />
           </TouchableOpacity>
         </View>
+
+          {/* Expense / Income Toggle */}
+          <View style={s.toggleContainer}>
+            <TouchableOpacity
+              style={[s.toggleBtn, entryType === "expense" && s.toggleBtnActive]}
+              onPress={() => {
+                if (entryType !== "expense") {
+                  setEntryType("expense");
+                  Haptics.selectionAsync();
+                }
+              }}
+              activeOpacity={0.7}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: entryType === "expense" }}
+              accessibilityLabel="Expense mode"
+            >
+              <Ionicons name="arrow-up" size={14} color={entryType === "expense" ? "#fff" : colors.mutedForeground} />
+              <Text style={[s.toggleBtnText, entryType === "expense" && s.toggleBtnTextActive]}>Expense</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[s.toggleBtn, entryType === "income" && s.toggleBtnActiveIncome]}
+              onPress={() => {
+                if (entryType !== "income") {
+                  setEntryType("income");
+                  Haptics.selectionAsync();
+                }
+              }}
+              activeOpacity={0.7}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: entryType === "income" }}
+              accessibilityLabel="Income mode"
+            >
+              <Ionicons name="arrow-down" size={14} color={entryType === "income" ? "#fff" : colors.mutedForeground} />
+              <Text style={[s.toggleBtnText, entryType === "income" && s.toggleBtnTextActive]}>Income</Text>
+            </TouchableOpacity>
+          </View>
 
           <View style={s.content}>
             {/* Amount Input */}
@@ -423,12 +533,25 @@ export default function QuickLogScreen() {
             <View style={s.noteWrap}>
               <TextInput
                 style={s.noteInput}
-                placeholder="e.g. Lunch at cafe"
+                placeholder={entryType === "income" ? "e.g. Monthly salary" : "e.g. Lunch at cafe"}
                 placeholderTextColor={colors.mutedForeground + '60'}
                 value={description}
                 onChangeText={(text) => {
                   setDescription(text);
-                  const matched = classifyText(text, customCategories);
+                  // Smart autocomplete: debounce search
+                  if (autocompleteDebounceRef.current) {
+                    clearTimeout(autocompleteDebounceRef.current);
+                  }
+                  if (text.trim().length >= 1) {
+                    autocompleteDebounceRef.current = setTimeout(() => {
+                      getAutocompleteSuggestions(text.trim(), entryType)
+                        .then(setAutocompleteResults)
+                        .catch(() => setAutocompleteResults([]));
+                    }, 200);
+                  } else {
+                    setAutocompleteResults([]);
+                  }
+                  const matched = classifyText(text, customCategories, entryType);
                   if (matched && matched !== selectedCategory) {
                     setSelectedCategory(matched);
                     const matchingCat = allCategories.find((c) => c.key === matched);
@@ -444,13 +567,106 @@ export default function QuickLogScreen() {
               />
             </View>
 
+            {/* Autocomplete Suggestions */}
+            {autocompleteResults.length > 0 && (
+              <View style={s.autocompleteContainer}>
+                {autocompleteResults.map((item, idx) => (
+                  <TouchableOpacity
+                    key={`${item.description}-${idx}`}
+                    style={s.autocompleteChip}
+                    activeOpacity={0.7}
+                    onPress={() => {
+                      setDescription(item.description);
+                      setSelectedCategory(item.category);
+                      setAmount(item.avgAmount > 0 ? String(item.avgAmount) : amount);
+                      setAutocompleteResults([]);
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+                    }}
+                  >
+                    <Ionicons name="time-outline" size={14} color={colors.mutedForeground} />
+                    <Text style={s.autocompleteText} numberOfLines={1}>
+                      {item.description}
+                    </Text>
+                    <Text style={s.autocompleteAmount}>
+                      {currency}{item.avgAmount}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+
+            {/* Quick Repeat Templates */}
+            {entryType === "expense" && quickRepeatTemplates.length > 0 && !description && autocompleteResults.length === 0 && (
+              <View style={s.quickRepeatContainer}>
+                <Text style={s.quickRepeatLabel}>Quick Repeat</Text>
+                <View style={s.quickRepeatRow}>
+                  {quickRepeatTemplates.map((item, idx) => {
+                    const catMeta = allCategories.find((c) => c.key === item.category);
+                    const catColor = catMeta?.color || colors.primary;
+                    return (
+                      <TouchableOpacity
+                        key={`qr-${idx}`}
+                        style={[s.quickRepeatChip, { borderColor: catColor + "40" }]}
+                        activeOpacity={0.7}
+                        onPress={async () => {
+                          // One-tap log: pre-fill and save immediately
+                          const resolvedAmt = item.avgAmount;
+                          if (resolvedAmt <= 0) return;
+                          try {
+                            await addExpense({
+                              category: item.category as ExpenseCategory,
+                              amount: resolvedAmt,
+                              description: item.description,
+                              date: new Date().toISOString(),
+                              type: "expense",
+                              recurring: null,
+                            });
+                            await recordDescription(item.description, item.category, resolvedAmt, "expense").catch(() => {});
+                            await setLastExpenseCategory(item.category);
+                            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                            setSaved(true);
+                            Animated.parallel([
+                              Animated.spring(successScale, { toValue: 1, useNativeDriver: true, damping: 12, stiffness: 180 }),
+                              Animated.timing(successOpacity, { toValue: 1, duration: 150, useNativeDriver: true }),
+                            ]).start(() => {
+                              setTimeout(() => {
+                                Keyboard.dismiss();
+                                Animated.parallel([
+                                  Animated.timing(bgOpacity, { toValue: 0, duration: 150, useNativeDriver: true }),
+                                  Animated.timing(slideY, { toValue: 400, duration: 200, easing: Easing.in(Easing.ease), useNativeDriver: true }),
+                                ]).start(() => router.back());
+                              }, 900);
+                            });
+                          } catch (e) {
+                            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+                          }
+                        }}
+                      >
+                        <Ionicons
+                          name={(catMeta?.icon as any) || "flash"}
+                          size={14}
+                          color={catColor}
+                        />
+                        <Text style={[s.quickRepeatText, { color: catColor }]} numberOfLines={1}>
+                          {item.description}
+                        </Text>
+                        <Text style={[s.quickRepeatAmount, { color: catColor }]}>
+                          {currency}{item.avgAmount}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+            )}
+
             {/* Recurring Toggle */}
             <View style={s.toggleRow}>
               <View style={s.toggleLeft}>
                 <Ionicons name="repeat-outline" size={18} color={colors.primary} style={{ marginRight: 8 }} />
                 <View>
                   <Text style={s.toggleLabel}>Repeat Monthly</Text>
-                  <Text style={s.toggleSub}>Rent, subscription, EMI, etc.</Text>
+                  <Text style={s.toggleSub}>{entryType === "income" ? "Salary, freelance, etc." : "Rent, subscription, EMI, etc."}</Text>
                 </View>
               </View>
               <Switch
@@ -476,16 +692,18 @@ export default function QuickLogScreen() {
               onPress={handleSave}
               activeOpacity={0.85}
               disabled={saving || saved}
+              accessibilityLabel={entryType === "income" ? "Save income" : "Save expense"}
+              accessibilityRole="button"
             >
               <LinearGradient
-                colors={[colors.primary, colors.primary]}
+                colors={entryType === "income" ? ["#10b981", "#059669"] : [colors.primary, colors.primary]}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
                 style={s.saveBtnGradient}
               >
                 <Ionicons name="checkmark-circle-outline" size={20} color="#fff" />
                 <Text style={s.saveBtnText}>
-                  {saving ? 'Saving…' : 'Save Expense'}
+                  {saving ? 'Saving…' : entryType === 'income' ? 'Save Income' : 'Save Expense'}
                 </Text>
               </LinearGradient>
             </TouchableOpacity>
@@ -576,6 +794,38 @@ function styles(
       backgroundColor: colors.muted,
       alignItems: 'center',
       justifyContent: 'center',
+    },
+    toggleContainer: {
+      flexDirection: 'row',
+      backgroundColor: isDark ? colors.background : '#f0faf5',
+      borderRadius: 14,
+      padding: 4,
+      marginHorizontal: 20,
+      marginBottom: 4,
+      gap: 4,
+    },
+    toggleBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 6,
+      paddingVertical: 10,
+      borderRadius: 11,
+    },
+    toggleBtnActive: {
+      backgroundColor: colors.primary,
+    },
+    toggleBtnActiveIncome: {
+      backgroundColor: '#10b981',
+    },
+    toggleBtnText: {
+      fontSize: 14,
+      fontFamily: 'Inter_600SemiBold',
+      color: colors.mutedForeground,
+    },
+    toggleBtnTextActive: {
+      color: '#fff',
     },
     content: {
       paddingHorizontal: 20,
@@ -779,6 +1029,70 @@ function styles(
       fontFamily: "Inter_400Regular",
       color: colors.foreground,
       lineHeight: 16,
+    },
+    // Autocomplete suggestions
+    autocompleteContainer: {
+      marginTop: -20,
+      marginBottom: 16,
+      gap: 4,
+    },
+    autocompleteChip: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      backgroundColor: isDark ? colors.card : "#f8fffe",
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+    autocompleteText: {
+      flex: 1,
+      fontSize: 14,
+      fontFamily: "Inter_500Medium",
+      color: colors.foreground,
+    },
+    autocompleteAmount: {
+      fontSize: 13,
+      fontFamily: "Inter_600SemiBold",
+      color: colors.primary,
+    },
+    // Quick repeat templates
+    quickRepeatContainer: {
+      marginBottom: 16,
+    },
+    quickRepeatLabel: {
+      fontSize: 11,
+      fontFamily: "Inter_600SemiBold",
+      color: colors.mutedForeground,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      marginBottom: 8,
+    },
+    quickRepeatRow: {
+      flexDirection: "row",
+      gap: 8,
+    },
+    quickRepeatChip: {
+      flex: 1,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      paddingHorizontal: 10,
+      paddingVertical: 10,
+      backgroundColor: isDark ? colors.card : "#f8fffe",
+      borderRadius: 12,
+      borderWidth: 1.5,
+    },
+    quickRepeatText: {
+      flex: 1,
+      fontSize: 12,
+      fontFamily: "Inter_600SemiBold",
+    },
+    quickRepeatAmount: {
+      fontSize: 12,
+      fontFamily: "Inter_700Bold",
     },
   });
 }

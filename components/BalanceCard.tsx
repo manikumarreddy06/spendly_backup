@@ -233,11 +233,11 @@ const s = StyleSheet.create({
     color: "#fff",
   },
   ringLimit: {
-    fontSize: 7,
+    fontSize: 9,
     fontFamily: "Inter_400Regular",
     color: "rgba(255,255,255,0.8)",
     textAlign: "center",
-    lineHeight: 9,
+    lineHeight: 11,
     marginTop: 1,
   },
 });

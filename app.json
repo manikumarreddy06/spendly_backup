@@ -19,7 +19,7 @@
     },
     "android": {
       "package": "com.spendlyapp.personal",
-      "versionCode": 3,
+      "versionCode": 4,
       "jsEngine": "hermes",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/spendly_s_logo.png",

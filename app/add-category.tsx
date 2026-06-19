@@ -21,8 +21,6 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useApp, useCurrency } from "@/context/AppContext";
 import { useColors } from "@/hooks/useColors";
 
-const GREEN = "#18633f";
-const GREEN_LIGHT = "#1a5e3d";
 const ICON_COLS = 5;
 const ICON_GAP = 8;
 

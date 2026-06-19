@@ -6,8 +6,9 @@ import {
   clearNativeTransactions,
   type NativeDetectedTransaction,
 } from "@/lib/transactionDetection";
-import { categorizeWithOverrides, setUserOverride } from "@/lib/merchantCategorizer";
+import { categorizeWithOverrides, setUserOverride, getCategorizationConfidence, incrementApprovalCount } from "@/lib/merchantCategorizer";
 import { scheduleReviewReminder, cancelReviewReminder } from "@/hooks/useNotifications";
+import { recordDescription } from "@/lib/smartDescriptions";
 
 const STORAGE_KEY = "@detected_transactions";
 const SETTINGS_KEY = "@detection_settings";
@@ -56,6 +57,8 @@ export function useDetectedTransactionState(
   const [transactions, setTransactions] = useState<DetectedTransaction[]>([]);
   const [settings, setSettings] = useState<DetectionSettings>(DEFAULT_DETECTION_SETTINGS);
   const [loaded, setLoaded] = useState(false);
+  // Track auto-approved transactions for undo capability
+  const [autoApproved, setAutoApproved] = useState<DetectedTransaction[]>([]);
 
   // Load from AsyncStorage on mount
   useEffect(() => {
@@ -202,8 +205,85 @@ export function useDetectedTransactionState(
   }, [persistTransactions]);
 
   /**
-   * Approve a single transaction — creates a real expense.
+   * Auto-approve high-confidence pending transactions.
+   * Transactions with learned user overrides AND 3+ prior approvals
+   * are automatically approved without manual review.
    */
+  const autoApproveHighConfidence = useCallback(async () => {
+    const pending = transactions.filter((t) => t.status === "pending");
+    if (pending.length === 0) return;
+
+    const newlyApproved: DetectedTransaction[] = [];
+
+    for (const tx of pending) {
+      try {
+        const { category, confidence } = await getCategorizationConfidence(tx.merchant);
+        if (confidence === "high") {
+          // Auto-approve: create the expense
+          await addExpenseFn({
+            category,
+            amount: tx.amount,
+            description: tx.merchant,
+            date: tx.detectedAt,
+          });
+
+          // Track approval count
+          await incrementApprovalCount(tx.merchant);
+          // Track description for smart autocomplete
+          recordDescription(tx.merchant, category, tx.amount, "expense").catch(() => {});
+
+          newlyApproved.push({
+            ...tx,
+            category,
+            status: "approved",
+            reviewedAt: new Date().toISOString(),
+          });
+        }
+      } catch {
+        // If auto-approve fails for any transaction, skip it (leaves as pending)
+      }
+    }
+
+    if (newlyApproved.length > 0) {
+      const approvedIds = new Set(newlyApproved.map((t) => t.id));
+
+      setTransactions((prev) => {
+        const updated = prev.map((t) => {
+          const approved = newlyApproved.find((a) => a.id === t.id);
+          if (approved) return approved;
+          return t;
+        });
+        persistTransactions(updated);
+        return updated;
+      });
+
+      // Store for undo (lasts 10 seconds)
+      setAutoApproved(newlyApproved);
+      setTimeout(() => setAutoApproved([]), 10000);
+    }
+  }, [transactions, addExpenseFn, persistTransactions]);
+
+  /**
+   * Undo the last auto-approve batch.
+   * Removes the expenses that were auto-created and reverts transaction status to pending.
+   */
+  const undoAutoApprove = useCallback(async () => {
+    if (autoApproved.length === 0) return;
+
+    setTransactions((prev) => {
+      const undoIds = new Set(autoApproved.map((t) => t.id));
+      const updated = prev.map((t) => {
+        if (undoIds.has(t.id)) {
+          return { ...t, status: "pending" as const, reviewedAt: undefined };
+        }
+        return t;
+      });
+      persistTransactions(updated);
+      return updated;
+    });
+
+    setAutoApproved([]);
+  }, [autoApproved, persistTransactions]);
   const approveTransaction = useCallback(async (
     id: string,
     edits?: { amount?: number; category?: string; merchant?: string }
@@ -227,6 +307,11 @@ export function useDetectedTransactionState(
       description: finalMerchant,
       date: tx.detectedAt,
     });
+
+    // Track approval for auto-approve learning
+    incrementApprovalCount(tx.merchant).catch(() => {});
+    // Track description for smart autocomplete
+    recordDescription(finalMerchant, finalCategory, finalAmount).catch(() => {});
 
     // Mark as approved
     setTransactions((prev) => {
@@ -312,6 +397,9 @@ export function useDetectedTransactionState(
     rejectTransaction,
     approveAll,
     rejectAll,
+    autoApproveHighConfidence,
+    undoAutoApprove,
+    autoApprovedTransactions: autoApproved,
     loaded,
   };
 }

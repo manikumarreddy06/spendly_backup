@@ -47,6 +47,8 @@ class TransactionNotificationService : NotificationListenerService() {
             "com.google.android.apps.messaging",        // Google Messages
             "com.samsung.android.messaging",            // Samsung Messages
             "com.android.mms",                          // Default Android SMS
+            "com.truecaller",                           // Truecaller SMS client
+            "com.microsoft.android.smsorganizer"        // Microsoft SMS Organizer
         )
     }
 
@@ -194,6 +196,8 @@ class TransactionNotificationService : NotificationListenerService() {
             "com.google.android.apps.messaging" -> "Messages"
             "com.samsung.android.messaging" -> "Samsung Messages"
             "com.android.mms" -> "Messages"
+            "com.truecaller" -> "Truecaller"
+            "com.microsoft.android.smsorganizer" -> "SMS Organizer"
             else -> {
                 try {
                     packageManager.getApplicationLabel(

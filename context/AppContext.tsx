@@ -83,6 +83,8 @@ export { parseGroupInviteCode } from "./state/useSplitState";
 import { useBudgetState } from "./state/useBudgetState";
 import { useCategoryState } from "./state/useCategoryState";
 import { useDetectedTransactionState, type DetectedTransaction, type DetectionSettings } from "./state/useDetectedTransactionState";
+import { recordDescription } from "@/lib/smartDescriptions";
+import { BUILTIN_CATEGORIES } from "@/constants/categories";
 
 export type ExpenseCategory =
   | "travel"
@@ -117,6 +119,7 @@ export interface Expense {
   description: string;
   date: string;
   createdAt: string;
+  type?: "income" | "expense";
   recurring?: "monthly" | null;
   recurringGroupId?: string | null;
 }
@@ -199,6 +202,7 @@ interface AppContextType {
   expenses: Expense[];
   allExpenses: Expense[];
   addExpense: (data: Omit<Expense, "id" | "createdAt">) => Promise<void>;
+  addExpenseWithBudgetCheck: (data: Omit<Expense, "id" | "createdAt">) => Promise<void>;
   editExpense: (id: string, data: Partial<Omit<Expense, "id" | "createdAt">>) => Promise<void>;
   deleteExpense: (id: string) => Promise<void>;
   deleteRecurringExpenseSeries: (id: string) => Promise<void>;
@@ -216,6 +220,7 @@ interface AppContextType {
   deleteSplitExpense: (groupId: string, expenseId: string) => Promise<void>;
   getCurrentMonthExpenses: () => Expense[];
   getCurrentMonthTotal: () => number;
+  getCurrentMonthIncome: () => number;
   getTotalByCategory: (category: ExpenseCategory) => number;
   getSpentByCategory: (category: string) => number;
   getBalances: (group: SplitGroup) => Record<string, number>;
@@ -252,6 +257,10 @@ interface AppContextType {
   rejectTransaction: (id: string) => Promise<void>;
   approveAllTransactions: () => Promise<void>;
   rejectAllTransactions: () => Promise<void>;
+  // Auto-approve for high-confidence detected transactions
+  autoApproveHighConfidence: () => Promise<void>;
+  undoAutoApprove: () => Promise<void>;
+  autoApprovedTransactions: DetectedTransaction[];
 }
 
 // POLISH 1: Export currency helper
@@ -521,6 +530,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     rejectTransaction,
     approveAll: approveAllTransactions,
     rejectAll: rejectAllTransactions,
+    autoApproveHighConfidence,
+    undoAutoApprove,
+    autoApprovedTransactions,
     loaded: detectionLoaded,
   } = useDetectedTransactionState(addExpense);
 
@@ -553,6 +565,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const getCurrentMonthExpenses = useCallback(() => {
     const now = new Date();
     return allExpenses.filter((e) => {
+      if (e.type === "income") return false;
       const date = new Date(e.date);
       return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
     });
@@ -562,6 +575,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     () => getCurrentMonthExpenses().reduce((sum, e) => sum + e.amount, 0),
     [getCurrentMonthExpenses]
   );
+
+  const getCurrentMonthIncome = useCallback(() => {
+    const now = new Date();
+    return expenses
+      .filter((e) => {
+        if (e.type !== "income") return false;
+        const date = new Date(e.date);
+        return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
+      })
+      .reduce((sum, e) => sum + e.amount, 0);
+  }, [expenses]);
 
   const getTotalByCategory = useCallback(
     (category: ExpenseCategory) =>
@@ -629,6 +653,62 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const spent = getSpentByCategory(category);
     return Math.min((spent / limit) * 100, 100);
   }, [budgetLimits, getSpentByCategory]);
+
+  // ── Budget Overspend Alert Wrapper ──
+  // Wraps addExpense with a post-save budget check.
+  // Shows an alert when a category exceeds its budget limit.
+  const addExpenseWithBudgetCheck = useCallback(async (data: Omit<Expense, "id" | "createdAt">) => {
+    await addExpense(data);
+
+    // Track description for smart autocomplete (non-blocking)
+    const desc = data.description || "";
+    if (desc.trim().length >= 2) {
+      recordDescription(desc, data.category, data.amount, data.type).catch(() => {});
+    }
+
+    // Skip budget check for income entries
+    if (data.type === "income") return;
+
+    // Check budget after expense is added (non-blocking)
+    try {
+      const limit = budgetLimits[data.category];
+      if (!limit || limit <= 0) return;
+
+      // Recalculate spent AFTER the expense was added
+      const now = new Date();
+      const currentMonthExpenses = allExpenses.filter((e) => {
+        const d = new Date(e.date);
+        return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+      });
+      const categorySpent = currentMonthExpenses
+        .filter((e) => e.category === data.category)
+        .reduce((sum, e) => sum + e.amount, 0) + data.amount; // +data.amount since allExpenses may not be updated yet
+
+      const pct = Math.round((categorySpent / limit) * 100);
+
+      if (pct >= 100) {
+        // Overspent — show warning alert
+        const overAmount = categorySpent - limit;
+        const categoryLabel = BUILTIN_CATEGORIES.find((c) => c.key === data.category)?.label || data.category;
+        showAlert(
+          "Budget Exceeded",
+          `You've exceeded your ${categoryLabel} budget by ${profile?.currency || "₹"}${Math.round(overAmount).toLocaleString("en-IN")}. Consider slowing down on spending for the rest of the month.`,
+          [{ text: "OK", style: "default" }]
+        );
+      } else if (pct >= 80) {
+        // Warning zone — show a less intrusive alert
+        const remaining = limit - categorySpent;
+        const categoryLabel = BUILTIN_CATEGORIES.find((c) => c.key === data.category)?.label || data.category;
+        showAlert(
+          "Budget Warning",
+          `${categoryLabel} budget is at ${pct}%. ${profile?.currency || "₹"}${Math.round(remaining).toLocaleString("en-IN")} remaining this month.`,
+          [{ text: "OK", style: "default" }]
+        );
+      }
+    } catch {
+      // Non-critical; ignore budget check failures
+    }
+  }, [addExpense, budgetLimits, allExpenses, showAlert, profile?.currency]);
 
   const undoDelete = useCallback(async () => {
     if (!lastDeleted) return;
@@ -729,6 +809,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         expenses,
         allExpenses,
         addExpense,
+        addExpenseWithBudgetCheck,
         editExpense,
         deleteExpense,
         deleteRecurringExpenseSeries,
@@ -743,6 +824,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         deleteSplitExpense,
         getCurrentMonthExpenses,
         getCurrentMonthTotal,
+        getCurrentMonthIncome,
         getTotalByCategory,
         getSpentByCategory,
         getBalances,
@@ -772,6 +854,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         rejectTransaction,
         approveAllTransactions,
         rejectAllTransactions,
+        autoApproveHighConfidence,
+        undoAutoApprove,
+        autoApprovedTransactions,
       }}
     >
       {children}

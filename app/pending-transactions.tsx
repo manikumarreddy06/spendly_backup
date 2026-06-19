@@ -226,15 +226,19 @@ export default function PendingTransactionsScreen() {
                         style={[s.actionBtn, s.approveBtn]}
                         onPress={(e) => { e.stopPropagation(); handleApprove(tx); }}
                         activeOpacity={0.7}
+                        accessibilityLabel={`Approve ${tx.merchant} ${currency}${tx.amount}`}
+                        accessibilityRole="button"
                       >
-                        <Ionicons name="checkmark" size={16} color="#fff" />
+                        <Ionicons name="checkmark" size={18} color="#fff" />
                       </TouchableOpacity>
                       <TouchableOpacity
                         style={[s.actionBtn, s.rejectBtn]}
                         onPress={(e) => { e.stopPropagation(); handleReject(tx); }}
                         activeOpacity={0.7}
+                        accessibilityLabel={`Reject ${tx.merchant} ${currency}${tx.amount}`}
+                        accessibilityRole="button"
                       >
-                        <Ionicons name="close" size={16} color="#fff" />
+                        <Ionicons name="close" size={18} color="#fff" />
                       </TouchableOpacity>
                     </View>
                   </View>
@@ -249,6 +253,8 @@ export default function PendingTransactionsScreen() {
               style={[s.bulkBtn, { backgroundColor: colors.primary }]}
               onPress={handleApproveAll}
               activeOpacity={0.85}
+              accessibilityLabel={`Approve all ${pendingTransactionCount} pending transactions`}
+              accessibilityRole="button"
             >
               <Ionicons name="checkmark-done" size={18} color="#fff" />
               <Text style={s.bulkBtnText}>Approve All ({pendingTransactionCount})</Text>
@@ -492,11 +498,11 @@ function createStyles(colors: ReturnType<typeof useColors>, topPad: number, bott
       color: colors.foreground,
       marginBottom: 6,
     },
-    txActions: { flexDirection: "row", gap: 6 },
+    txActions: { flexDirection: "row", gap: 8 },
     actionBtn: {
-      width: 28,
-      height: 28,
-      borderRadius: 14,
+      width: 36,
+      height: 36,
+      borderRadius: 18,
       alignItems: "center",
       justifyContent: "center",
     },

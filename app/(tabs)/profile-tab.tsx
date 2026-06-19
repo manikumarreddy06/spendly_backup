@@ -32,15 +32,17 @@ function ProfileTabScreen() {
     else if (theme === "light") setThemeMode("dark");
     else setThemeMode("system");
   }, [theme, setThemeMode]);
-  const { profile, expenses, splitGroups, getCurrentMonthTotal, getSpentByCategory } = useApp();
+  const { profile, expenses, splitGroups, getCurrentMonthTotal, getCurrentMonthIncome, getSpentByCategory } = useApp();
   const currency = useCurrency();
 
   const themeIcon = theme === "dark" ? "moon" : theme === "light" ? "sunny" : "phone-portrait-outline";
   const themeLabel = theme === "dark" ? "Dark" : theme === "light" ? "Light" : "System";
 
   const monthTotal = getCurrentMonthTotal();
+  const loggedIncome = getCurrentMonthIncome();
+  const totalIncome = loggedIncome > 0 ? loggedIncome : (profile?.salary ?? 0);
   const groupCount = splitGroups.length;
-  const budgetLimit = profile?.salary ?? 0;
+  const budgetLimit = totalIncome > 0 ? totalIncome : 0;
   const remaining = budgetLimit > 0 ? Math.max(budgetLimit - monthTotal, 0) : 0;
   const budgetPct = budgetLimit > 0 ? Math.min(100, Math.round((monthTotal / budgetLimit) * 100)) : 0;
 
